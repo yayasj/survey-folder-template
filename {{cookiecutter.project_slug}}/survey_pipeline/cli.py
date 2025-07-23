@@ -14,6 +14,7 @@ sys.path.append(str(project_root))
 
 from survey_pipeline.config import load_config, validate_config
 from survey_pipeline.utils import setup_logging
+from survey_pipeline.odk_client import create_odk_client, test_odk_connection
 
 @click.group()
 @click.option('--config', '-c', default=None, help='Path to config file')
@@ -47,48 +48,219 @@ def test_connection(ctx):
     
     click.echo("🔌 Testing ODK Central connection...")
     
-    # This will be implemented in the next iteration
-    click.echo("⚠️  Connection test not yet implemented")
-    click.echo(f"Will test connection to: {config['odk']['base_url']}")
-    click.echo(f"Project ID: {config['odk'].get('project_id', 'Not configured')}")
+    try:
+        client = create_odk_client()
+        success = client.test_connection()
+        
+        if success:
+            click.echo("✅ Connection successful!")
+            
+            # Show project details
+            forms = client.discover_forms()
+            click.echo(f"\n📋 Project Information:")
+            click.echo(f"  URL: {config['odk']['base_url']}")
+            click.echo(f"  Project ID: {config['odk']['project_id']}")
+            click.echo(f"  Forms available: {len(forms)}")
+            
+            if forms:
+                click.echo("\n📝 Available forms:")
+                for form in forms:
+                    submission_count = client.get_form_submissions_count(form['xmlFormId'])
+                    click.echo(f"  - {form['xmlFormId']}: {submission_count} submissions")
+        else:
+            click.echo("❌ Connection failed!")
+            sys.exit(1)
+            
+    except Exception as e:
+        click.echo(f"❌ Connection error: {str(e)}", err=True)
+        sys.exit(1)
 
 @cli.command()
 @click.option('--dry-run', is_flag=True, help='Show what would be downloaded without actually downloading')
+@click.option('--format', '-f', default='csv', type=click.Choice(['csv', 'json']), help='Download format')
+@click.option('--forms', help='Comma-separated list of specific form IDs to download')
 @click.pass_context
-def ingest(ctx, dry_run):
+def ingest(ctx, dry_run, format, forms):
     """Download data from ODK Central"""
     config = ctx.obj['config']
     
-    if dry_run:
-        click.echo("🔍 Dry run mode - showing what would be downloaded:")
-        click.echo(f"Source: {config['odk']['base_url']}")
-        click.echo(f"Project: {config['odk'].get('project_id')}")
-        click.echo("Forms: [Will be auto-discovered]")
-        return
-    
-    click.echo("📥 Starting data ingestion...")
-    
-    # This will be implemented in the next iteration
-    click.echo("⚠️  Data ingestion not yet implemented")
-    click.echo("Will integrate with pyODK in next iteration")
+    try:
+        # Create ODK client
+        client = create_odk_client()
+        
+        # Test connection first
+        if not client.test_connection():
+            click.echo("❌ Cannot connect to ODK Central. Please check your credentials.", err=True)
+            sys.exit(1)
+        
+        # Discover forms
+        all_forms = client.discover_forms()
+        
+        # Parse forms filter if provided
+        forms_filter = None
+        if forms:
+            forms_filter = [f.strip() for f in forms.split(',')]
+            click.echo(f"🔍 Filtering to specific forms: {', '.join(forms_filter)}")
+        
+        if dry_run:
+            click.echo("🔍 Dry run mode - showing what would be downloaded:")
+            click.echo(f"  Source: {config['odk']['base_url']}")
+            click.echo(f"  Project: {config['odk']['project_id']}")
+            click.echo(f"  Format: {format.upper()}")
+            
+            forms_to_show = [f for f in all_forms if not forms_filter or f['xmlFormId'] in forms_filter]
+            click.echo(f"\n📝 Forms to download ({len(forms_to_show)}):")
+            
+            total_submissions = 0
+            for form in forms_to_show:
+                submission_count = client.get_form_submissions_count(form['xmlFormId'])
+                total_submissions += submission_count
+                click.echo(f"  - {form['xmlFormId']}: {submission_count} submissions")
+            
+            click.echo(f"\n📊 Total submissions: {total_submissions}")
+            return
+        
+        click.echo("📥 Starting data ingestion...")
+        
+        # Set up output path
+        project_root = Path.cwd()
+        raw_data_path = project_root / "raw"
+        
+        # Download all forms
+        results = client.download_all_forms(
+            output_path=raw_data_path,
+            format=format,
+            forms_filter=forms_filter
+        )
+        
+        # Display results
+        click.echo(f"\n✅ Ingestion completed!")
+        click.echo(f"  📁 Run timestamp: {results['run_timestamp']}")
+        click.echo(f"  📋 Forms processed: {results['forms_successful']}/{results['forms_requested']}")
+        click.echo(f"  📊 Total submissions: {results['total_submissions']}")
+        
+        if results['forms_failed'] > 0:
+            click.echo(f"  ⚠️  Failed forms: {results['forms_failed']}")
+            
+        # Show individual form results
+        click.echo(f"\n📝 Form details:")
+        for form_id, result in results['download_results'].items():
+            if result['status'] == 'success':
+                metadata = result['metadata']
+                click.echo(f"  ✅ {form_id}: {metadata['submission_count']} submissions "
+                          f"({metadata['file_size_bytes']} bytes)")
+            else:
+                click.echo(f"  ❌ {form_id}: {result['error']}")
+        
+        # Update staging area
+        staging_path = project_root / "staging" / "raw"
+        if staging_path.exists():
+            import shutil
+            shutil.rmtree(staging_path)
+        
+        # Copy latest run to staging
+        latest_run_path = raw_data_path / results['run_timestamp']
+        if latest_run_path.exists():
+            import shutil
+            shutil.copytree(latest_run_path, staging_path)
+            click.echo(f"  📂 Data copied to staging/raw/")
+        
+        click.echo(f"\n🎯 Next step: python -m survey_pipeline.cli validate")
+        
+    except Exception as e:
+        click.echo(f"❌ Ingestion failed: {str(e)}", err=True)
+        sys.exit(1)
 
 @cli.command()
-@click.option('--suite', '-s', help='Specific validation suite to run')
+@click.option('--dataset', '-d', help='Validate specific dataset only')
+@click.option('--suite', '-s', help='Use specific validation suite')
 @click.pass_context
-def validate(ctx, suite):
-    """Run data validation with Great Expectations"""
+def validate(ctx, dataset, suite):
+    """Validate datasets using Great Expectations"""
     config = ctx.obj['config']
     
-    click.echo("🔍 Starting data validation...")
-    
-    if suite:
-        click.echo(f"Running specific suite: {suite}")
-    else:
-        click.echo("Running all validation suites")
-    
-    # This will be implemented in the next iteration
-    click.echo("⚠️  Data validation not yet implemented")
-    click.echo("Will integrate with Great Expectations in next iteration")
+    try:
+        from survey_pipeline.validation import ValidationEngine
+        from survey_pipeline.utils import create_run_timestamp
+        
+        run_timestamp = create_run_timestamp()
+        
+        # Initialize validation engine
+        project_root = Path.cwd()
+        validation_engine = ValidationEngine(config, project_root)
+        
+        click.echo("🔍 Starting data validation...")
+        
+        if dataset:
+            # Validate specific dataset
+            dataset_path = Path("staging/raw") / f"{dataset}.csv"
+            
+            if not dataset_path.exists():
+                click.echo(f"❌ Dataset not found: {dataset_path}")
+                sys.exit(1)
+            
+            if not suite:
+                # Try to find suite from configuration
+                datasets_config = config.get('datasets', {})
+                for config_name, config_data in datasets_config.items():
+                    file_pattern = config_data.get('file_pattern', '')
+                    import fnmatch
+                    if fnmatch.fnmatch(dataset_path.name, file_pattern):
+                        suite = config_data.get('validation_suite', '')
+                        break
+                
+                if not suite:
+                    click.echo(f"❌ No validation suite found for {dataset}")
+                    sys.exit(1)
+            
+            click.echo(f"📊 Validating {dataset} with suite '{suite}'")
+            
+            validation_result, failed_rows = validation_engine.validate_dataset(
+                dataset_path, suite, run_timestamp
+            )
+            
+            # Show results
+            if validation_result['overall_success']:
+                click.echo(f"✅ Validation passed: {validation_result['passed_expectations']}/{validation_result['total_expectations']} expectations")
+            else:
+                click.echo(f"❌ Validation failed: {validation_result['failed_expectations']} expectations failed")
+                
+                if validation_result['critical_failures'] > 0:
+                    click.echo(f"🚨 Critical failures: {validation_result['critical_failures']}")
+                
+                if validation_result.get('failed_rows_count', 0) > 0:
+                    click.echo(f"📄 Failed rows saved: {validation_result['failed_rows_count']} rows")
+                    
+                sys.exit(1)
+        
+        else:
+            # Validate all datasets
+            click.echo("📊 Validating all datasets in staging area...")
+            
+            overall_results = validation_engine.validate_all_datasets(run_timestamp)
+            
+            # Show summary results
+            click.echo(f"\n📈 Validation Summary:")
+            click.echo(f"   Total datasets: {overall_results['total_datasets']}")
+            click.echo(f"   Validated: {overall_results['validated_datasets']}")
+            click.echo(f"   Passed: {overall_results['passed_datasets']}")
+            click.echo(f"   Failed: {overall_results['failed_datasets']}")
+            click.echo(f"   Overall pass rate: {overall_results['overall_pass_rate']:.1f}%")
+            
+            if overall_results['overall_success']:
+                click.echo("✅ Overall validation: PASSED")
+                click.echo(f"\n🎯 Next step: python -m survey_pipeline.cli clean")
+            else:
+                click.echo("❌ Overall validation: FAILED")
+                
+                if overall_results['critical_failures'] > 0:
+                    click.echo(f"🚨 Critical failures in {overall_results['critical_failures']} datasets")
+                
+                sys.exit(1)
+                
+    except Exception as e:
+        click.echo(f"❌ Validation failed: {str(e)}", err=True)
+        sys.exit(1)
 
 @cli.command()
 @click.option('--rules-file', '-r', help='Path to cleaning rules file')

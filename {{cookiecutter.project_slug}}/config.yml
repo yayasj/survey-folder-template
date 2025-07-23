@@ -106,10 +106,53 @@ dashboard:
     geographical_view: true
     enumerator_performance: true
 
-# Logging configuration
+# Pipeline configuration
+staging:
+  raw_data_dir: "staging/raw"
+  cleaned_data_dir: "staging/cleaned"
+  failed_data_dir: "staging/failed"
+  
+data_formats:
+  date_format: "%Y-%m-%d"
+  datetime_format: "%Y-%m-%d %H:%M:%S"
+  
 logging:
   level: "INFO"
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# Validation configuration
+validation:
+  minimum_pass_rate: 85.0  # Minimum % of expectations that must pass
+  fail_fast_on_critical: true  # Stop pipeline on critical validation failures
+  save_failed_rows: true  # Extract failed rows to separate files
+  
+# Dataset configurations with validation suites
+datasets:
+  household_surveys:
+    file_pattern: "*household*.csv"
+    validation_suite: "household_survey_validation"
+    cleaning_rules: "household_cleaning_rules.xlsx"
+    required: true
+    
+  baseline_assessments:
+    file_pattern: "*baseline*.csv"
+    validation_suite: "baseline_assessment_validation"
+    cleaning_rules: "baseline_cleaning_rules.xlsx"
+    required: false
+    
+  monitoring_data:
+    file_pattern: "*monitoring*.csv"
+    validation_suite: "household_survey_validation"  # Reuse household validation
+    cleaning_rules: "monitoring_cleaning_rules.xlsx"
+    required: false
+
+# Administrative columns to include in failed row extracts
+admin_columns:
+  - "district"
+  - "community"
+  - "enumerator_id"
+  - "supervisor_id"
+  - "form_version"
   
   # Log retention (days)
   retention_days: 30

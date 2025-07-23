@@ -1,0 +1,82 @@
+expectations:
+  # Table structure expectations
+  - expectation_type: expect_table_columns_to_match_ordered_list
+    kwargs:
+      column_list:
+        - survey_id
+        - submission_time
+        - start_time
+        - end_time
+        - deviceid
+        - today
+        - username
+    meta:
+      severity: critical
+      description: "Survey data must have required core columns in correct order"
+  
+  # Data quality expectations for core columns
+  - expectation_type: expect_column_values_to_not_be_null
+    kwargs:
+      column: survey_id
+      mostly: 1.0
+    meta:
+      severity: critical
+      description: "Survey ID must not be null"
+      
+  - expectation_type: expect_column_values_to_not_be_null
+    kwargs:
+      column: submission_time
+      mostly: 0.95
+    meta:
+      severity: warning
+      description: "Submission time should be present for most records"
+      
+  - expectation_type: expect_column_values_to_not_be_null
+    kwargs:
+      column: deviceid
+      mostly: 0.90
+    meta:
+      severity: warning
+      description: "Device ID should be present for most submissions"
+  
+  # Uniqueness expectations
+  - expectation_type: expect_compound_columns_to_be_unique
+    kwargs:
+      column_list:
+        - survey_id
+        - submission_time
+    meta:
+      severity: critical
+      description: "Survey submissions must be unique by ID and timestamp"
+  
+  # Date/time format expectations (simulated with value checks)
+  - expectation_type: expect_column_values_to_be_between
+    kwargs:
+      column: submission_time
+      min_value: "2020-01-01"
+      max_value: "2030-12-31"
+    meta:
+      severity: error
+      description: "Submission times must be within reasonable date range"
+  
+  # Geographic coordinate expectations (if present)
+  - expectation_type: expect_column_values_to_be_between
+    kwargs:
+      column: latitude
+      min_value: -90
+      max_value: 90
+    meta:
+      severity: warning
+      description: "Latitude values must be valid coordinates"
+      
+  - expectation_type: expect_column_values_to_be_between
+    kwargs:
+      column: longitude
+      min_value: -180
+      max_value: 180
+    meta:
+      severity: warning
+      description: "Longitude values must be valid coordinates"
+
+expectation_suite_name: "household_survey_validation"
+data_asset_type: "pandas_dataframe"
