@@ -1,0 +1,77 @@
+version: '3.8'
+
+services:
+  # Main pipeline service
+  survey-pipeline:
+    build:
+      context: .
+      target: production
+    container_name: "{{ cookiecutter.project_slug }}_pipeline"
+    ports:
+      - "{{ cookiecutter.streamlit_port }}:8501"
+    environment:
+      - ENVIRONMENT=production
+      - PYTHONPATH=/app
+    env_file:
+      - .env
+    volumes:
+      # Mount data directories as persistent volumes
+      - ./raw:/app/raw
+      - ./staging:/app/staging
+      - ./cleaned_stable:/app/cleaned_stable
+      - ./validation_results:/app/validation_results
+      - ./data_docs:/app/data_docs
+      - ./logs:/app/logs
+      # Mount config files
+      - ./config.yml:/app/config.yml:ro
+      - ./cleaning_rules.csv:/app/cleaning_rules.csv:ro
+      - ./expectations:/app/expectations:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    depends_on:
+      - prefect-server
+
+  # Prefect server for orchestration
+  prefect-server:
+    image: prefecthq/prefect:2-latest
+    container_name: "{{ cookiecutter.project_slug }}_prefect"
+    ports:
+      - "4200:4200"
+    environment:
+      - PREFECT_UI_URL=http://127.0.0.1:4200/api
+      - PREFECT_API_URL=http://127.0.0.1:4200/api
+      - PREFECT_SERVER_API_HOST=0.0.0.0
+    command: prefect server start --host 0.0.0.0
+    volumes:
+      - prefect_data:/root/.prefect
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4200/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Nginx reverse proxy for production
+  nginx:
+    image: nginx:alpine
+    container_name: "{{ cookiecutter.project_slug }}_nginx"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - survey-pipeline
+    restart: unless-stopped
+    profiles:
+      - production
+
+volumes:
+  prefect_data:
+    driver: local

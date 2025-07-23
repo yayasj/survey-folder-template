@@ -1,0 +1,145 @@
+# Survey Configuration
+# This file contains all survey-specific settings for the data pipeline
+
+# Project Information
+project:
+  name: "{{cookiecutter.project_name}}"
+  slug: "{{cookiecutter.project_slug}}"
+  description: "{{cookiecutter.project_description}}"
+  client: "{{cookiecutter.client_name}}"
+  start_date: "{{cookiecutter.survey_start_date}}"
+  end_date: "{{cookiecutter.survey_end_date}}"
+
+# Team Information
+team:
+  data_manager:
+    name: "{{cookiecutter.data_manager_name}}"
+    email: "{{cookiecutter.data_manager_email}}"
+  qa_officer:
+    name: "{{cookiecutter.qa_officer_name}}"
+    email: "{{cookiecutter.qa_officer_email}}"
+
+# ODK Central Configuration
+odk:
+  base_url: "{{cookiecutter.odk_central_url}}"
+  # Credentials loaded from environment variables:
+  # ODK_USERNAME, ODK_PASSWORD, ODK_PROJECT_ID
+  
+  # List of forms to download (will be auto-discovered if empty)
+  forms: []
+  
+  # Download format options: csv, json
+  download_format: "csv"
+  
+  # Include media attachments
+  include_attachments: false
+
+# Administrative columns to append to failed row extracts
+admin_columns:
+  - "submission_uuid"
+  - "submission_date" 
+  - "enumerator"
+  - "household_id"
+  - "gps_latitude"
+  - "gps_longitude"
+
+# Dataset definitions
+datasets:
+  # Example dataset configuration
+  household_roster:
+    file_pattern: "*roster*.csv"
+    primary_key: ["household_id", "member_id"]
+    validation_suite: "roster_suite"
+    
+  gps_locations:
+    file_pattern: "*gps*.csv" 
+    primary_key: ["household_id"]
+    validation_suite: "gps_suite"
+
+# Validation settings
+validation:
+  # Fail pipeline if structural checks fail
+  abort_on_structural_failure: true
+  
+  # Continue with business logic checks even if some fail
+  continue_on_business_logic_failure: true
+  
+  # Minimum pass rate to proceed to cleaning (%)
+  minimum_pass_rate: 85
+
+# Cleaning settings
+cleaning:
+  # Maximum iterations to attempt cleaning
+  max_iterations: 5
+  
+  # Create backup before cleaning
+  create_backup: true
+  
+  # Rules file location
+  rules_file: "cleaning_rules.xlsx"
+
+# Publishing settings
+publish:
+  # Atomic swap directory
+  stable_directory: "cleaned_stable"
+  
+  # Backup previous version
+  backup_previous: true
+  
+  # Notification settings
+  notify_on_success: true
+  notify_on_failure: true
+
+# Streamlit dashboard settings
+dashboard:
+  port: {{cookiecutter.streamlit_port}}
+  title: "{{cookiecutter.project_name}} - Data Dashboard"
+  refresh_interval: 300  # seconds
+  
+  # Branding
+  logo_path: "assets/logo.png"
+  
+  # Features to enable
+  features:
+    submission_trends: true
+    quality_metrics: true
+    geographical_view: true
+    enumerator_performance: true
+
+# Logging configuration
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  
+  # Log retention (days)
+  retention_days: 30
+  
+  # Log file locations
+  files:
+    ingestion: "logs/ingest_{date}.log"
+    validation: "logs/validate_{date}.log" 
+    cleaning: "logs/clean_{date}.log"
+    publish: "logs/publish_{date}.log"
+
+# Prefect settings
+prefect:
+  # Flow settings
+  flow_name: "{{cookiecutter.project_slug}}_pipeline"
+  
+  # Retry settings
+  max_retries: 3
+  retry_delay: 60  # seconds
+  
+  # Concurrency
+  max_concurrent_tasks: 2
+  
+# Performance tuning
+performance:
+  # Chunk size for large datasets
+  chunk_size: 10000
+  
+  # Memory limit (MB) 
+  memory_limit: 4096
+  
+  # Parallel processing
+  n_workers: 2

@@ -1,0 +1,18 @@
+{
+    "project_name": "Survey Project",
+    "project_slug": "{{ cookiecutter.project_name.lower().replace(' ', '_').replace('-', '_') }}",
+    "project_description": "A survey data management project using the 2M Corp pipeline",
+    "odk_central_url": "https://kratos.2m-corp.com/",
+    "client_name": "2M Corp",
+    "survey_start_date": "2025-01-01",
+    "survey_end_date": "2025-12-31",
+    "data_manager_name": "Data Manager",
+    "data_manager_email": "info@2m-corp.com",
+    "qa_officer_name": "QA Officer",
+    "qa_officer_email": "fchune@2m-corp.com",
+    "streamlit_port": "8501",
+    "enable_docker": "yes",
+    "_copy_without_render": [
+        "*.xlsx"
+    ]
+}

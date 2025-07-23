@@ -1,0 +1,18 @@
+# Development override for docker-compose
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+version: '3.8'
+
+services:
+  survey-pipeline:
+    build:
+      target: base
+    command: ["streamlit", "run", "streamlit_app/app.py", "--server.port=8501", "--server.address=0.0.0.0", "--server.runOnSave=true"]
+    environment:
+      - ENVIRONMENT=development
+    volumes:
+      # Mount source code for development
+      - .:/app
+    ports:
+      - "{{ cookiecutter.streamlit_port }}:8501"
+      - "8888:8888"  # Jupyter notebook port
