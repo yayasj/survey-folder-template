@@ -10,10 +10,20 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 import pandas as pd
 import yaml
-from great_expectations import DataContext
-from great_expectations.core.batch import RuntimeBatchRequest
-from great_expectations.checkpoint import SimpleCheckpoint
-from great_expectations.exceptions import DataContextError
+
+# Import Great Expectations components (v1.x compatible)
+try:
+    import great_expectations as gx
+    from great_expectations.data_context import CloudDataContext, FileDataContext
+    from great_expectations.exceptions import DataContextError
+    GX_VERSION = "1.x"
+except ImportError:
+    try:
+        from great_expectations import DataContext
+        from great_expectations.exceptions import DataContextError
+        GX_VERSION = "0.x"
+    except ImportError as e:
+        raise ImportError(f"Could not import Great Expectations: {e}")
 
 from .config import load_config
 from .utils import save_run_metadata, create_run_timestamp, ensure_directory
@@ -41,13 +51,31 @@ class ValidationEngine:
     def _initialize_data_context(self):
         """Initialize Great Expectations data context"""
         try:
-            # Try to get existing context
-            self.data_context = DataContext(context_root_dir=self.project_root)
-            logger.info("Using existing Great Expectations context")
-        except DataContextError:
-            # Initialize new context if none exists
-            logger.info("Initializing new Great Expectations context")
-            self.data_context = DataContext.create(self.project_root)
+            if GX_VERSION == "1.x":
+                # For Great Expectations v1.x
+                try:
+                    # Try to get existing context
+                    self.data_context = gx.get_context(project_root_dir=self.project_root)
+                    logger.info("Using existing Great Expectations context (v1.x)")
+                except Exception:
+                    # Initialize new context if none exists
+                    logger.info("Initializing new Great Expectations context (v1.x)")
+                    self.data_context = gx.get_context(
+                        project_root_dir=self.project_root,
+                        context_root_dir=self.project_root
+                    )
+            else:
+                # For Great Expectations v0.x (legacy)
+                try:
+                    self.data_context = DataContext(context_root_dir=self.project_root)
+                    logger.info("Using existing Great Expectations context (v0.x)")
+                except DataContextError:
+                    logger.info("Initializing new Great Expectations context (v0.x)")
+                    self.data_context = DataContext.create(self.project_root)
+        except Exception as e:
+            logger.warning(f"Could not initialize Great Expectations context: {e}")
+            logger.info("Validation will run in standalone mode without GX context")
+            self.data_context = None
     
     def load_expectation_suite(self, suite_name: str) -> Dict[str, Any]:
         """

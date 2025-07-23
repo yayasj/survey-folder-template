@@ -265,21 +265,85 @@ def validate(ctx, dataset, suite):
 @cli.command()
 @click.option('--rules-file', '-r', help='Path to cleaning rules file')
 @click.option('--max-iterations', '-i', default=5, help='Maximum cleaning iterations')
+@click.option('--dry-run', is_flag=True, help='Show what would be cleaned without making changes')
 @click.pass_context
-def clean(ctx, rules_file, max_iterations):
+def clean(ctx, rules_file, max_iterations, dry_run):
     """Apply data cleaning rules"""
     config = ctx.obj['config']
     
     if rules_file is None:
         rules_file = config.get('cleaning', {}).get('rules_file', 'cleaning_rules.xlsx')
     
-    click.echo("🧹 Starting data cleaning...")
-    click.echo(f"Rules file: {rules_file}")
-    click.echo(f"Max iterations: {max_iterations}")
-    
-    # This will be implemented in the next iteration
-    click.echo("⚠️  Data cleaning not yet implemented")
-    click.echo("Will implement rules engine in next iteration")
+    try:
+        from survey_pipeline.cleaning import DataCleaningEngine
+        from survey_pipeline.utils import create_run_timestamp
+        
+        run_timestamp = create_run_timestamp()
+        
+        # Initialize cleaning engine
+        project_root = Path.cwd()
+        cleaning_engine = DataCleaningEngine(config, project_root)
+        
+        click.echo("🧹 Starting data cleaning...")
+        click.echo(f"Rules file: {rules_file}")
+        click.echo(f"Max iterations: {max_iterations}")
+        
+        if dry_run:
+            click.echo("🔍 DRY RUN MODE - No changes will be made")
+            
+            # Load and display rules
+            try:
+                rules_df = cleaning_engine.load_cleaning_rules(rules_file)
+                click.echo(f"\n📋 Found {len(rules_df)} active cleaning rules:")
+                
+                for _, rule in rules_df.iterrows():
+                    priority = rule.get('priority', 'N/A')
+                    note = rule.get('note', '')[:50] + '...' if len(str(rule.get('note', ''))) > 50 else rule.get('note', '')
+                    click.echo(f"  • {rule['variable']}: {rule['rule_type']} (priority: {priority}) - {note}")
+                
+                # Show which datasets would be processed
+                staging_path = project_root / "staging" / "raw"
+                csv_files = list(staging_path.glob("*.csv"))
+                click.echo(f"\n📁 Datasets to process: {len(csv_files)}")
+                for csv_file in csv_files:
+                    click.echo(f"  • {csv_file.name}")
+                    
+                click.echo(f"\n💡 Run without --dry-run to apply cleaning rules")
+                
+            except Exception as e:
+                click.echo(f"❌ Failed to load rules: {str(e)}", err=True)
+                sys.exit(1)
+        
+        else:
+            # Apply cleaning to all datasets
+            overall_results = cleaning_engine.clean_all_datasets(
+                run_timestamp=run_timestamp,
+                rules_file=rules_file,
+                max_iterations=max_iterations
+            )
+            
+            # Show results
+            click.echo(f"\n📈 Cleaning Summary:")
+            click.echo(f"   Total datasets: {overall_results['total_datasets']}")
+            click.echo(f"   Cleaned: {overall_results['cleaned_datasets']}")
+            click.echo(f"   Failed: {overall_results['failed_datasets']}")
+            click.echo(f"   Total records modified: {overall_results['total_records_modified']}")
+            click.echo(f"   Total rules applied: {overall_results['total_rules_applied']}")
+            
+            if overall_results['overall_success']:
+                click.echo("✅ Overall cleaning: SUCCESS")
+                click.echo(f"\n📁 Cleaned data saved to: staging/cleaned/{run_timestamp}/")
+                click.echo(f"🎯 Next step: python -m survey_pipeline.cli publish")
+            else:
+                click.echo("❌ Overall cleaning: PARTIAL SUCCESS")
+                click.echo(f"⚠️  {overall_results['failed_datasets']} datasets failed to clean")
+                
+                if overall_results['failed_datasets'] > 0:
+                    click.echo(f"\n📄 Check cleaning logs for details")
+                
+    except Exception as e:
+        click.echo(f"❌ Cleaning failed: {str(e)}", err=True)
+        sys.exit(1)
 
 @cli.command()
 @click.option('--force', is_flag=True, help='Force publish even if validation fails')

@@ -1,0 +1,62 @@
+expectations:
+  # Table structure expectations
+  - expectation_type: expect_table_columns_to_match_ordered_list
+    kwargs:
+      column_list:
+        - SubmissionDate
+        - household_id
+        - num_household_members
+        - num_children_under_5
+        - num_children_6_17
+        - head_gender
+        - head_education_level
+        - household_income_last_month
+        - main_cooking_fuel
+        - water_source
+        - observations
+        - instanceID
+        - SubmitterName
+    meta:
+      severity: critical
+      description: "Survey data must have required core columns in correct order"
+  
+  # Data quality expectations for core columns
+  - expectation_type: expect_column_values_to_not_be_null
+    kwargs:
+      column: SubmissionDate
+      mostly: 1.0
+    meta:
+      severity: critical
+      description: "Survey ID must not be null"
+      
+  - expectation_type: expect_column_values_to_not_be_null
+    kwargs:
+      column: household_id
+      mostly: 1.0
+    meta:
+      severity: warning
+      description: "Household ID must be present for all submissions"
+
+  # Uniqueness expectations
+  - expectation_type: expect_compound_columns_to_be_unique
+    kwargs:
+      column_list:
+        - SubmissionDate
+        - household_id
+        - instanceID
+    meta:
+      severity: critical
+      description: "Survey submissions must be unique by ID and timestamp"
+  
+  # Date/time format expectations (simulated with value checks)
+  - expectation_type: expect_column_values_to_be_between
+    kwargs:
+      column: household_income_last_month
+      min_value: 0
+      max_value: 4500
+    meta:
+      severity: error
+      description: "Household income must be within reasonable date range"
+
+expectation_suite_name: "household_suite"
+data_asset_type: "csv"
