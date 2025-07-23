@@ -1,10 +1,24 @@
 """
 ODK Central Integration Module
 Handles authentication, form discovery, and data download from ODK Central
+
+This module includes enhanced data processing to handle common ODK export issues:
+- Group headers that create unnamed columns
+- Missing column headers from complex form structures  
+- Empty columns resulting from group organization
+- Data formatting inconsistencies
+
+Key features:
+- Automatic column header cleaning and naming
+- Empty column removal
+- Fallback export methods for problematic forms
+- Configurable data processing options
 """
 
 import logging
 import json
+import tempfile
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
@@ -30,23 +44,58 @@ class ODKCentralClient:
         self.config = config
         self.odk_config = config.get('odk', {})
         
+        # Data processing options
+        self.clean_column_headers = self.odk_config.get('clean_column_headers', True)
+        self.remove_empty_columns = self.odk_config.get('remove_empty_columns', True)
+        self.use_fallback_export = self.odk_config.get('use_fallback_export', True)
+        
         # Validate required configuration
         required_fields = ['base_url', 'username', 'password', 'project_id']
         for field in required_fields:
             if not self.odk_config.get(field):
                 raise ValueError(f"Missing required ODK configuration: {field}")
         
-        # Initialize pyODK client
+        # Initialize pyODK client using temporary config file
         try:
-            self.client = Client(
-                base_url=self.odk_config['base_url'],
-                username=self.odk_config['username'],
-                password=self.odk_config['password']
-            )
+            self.client = self._create_pyodk_client()
             logger.info(f"Initialized ODK Central client for {self.odk_config['base_url']}")
         except Exception as e:
             logger.error(f"Failed to initialize ODK Central client: {str(e)}")
             raise
+    
+    def _create_pyodk_client(self) -> Client:
+        """
+        Create pyODK client using temporary config file approach
+        
+        Returns:
+            Configured pyODK Client instance
+        """
+        # Create temporary TOML config file
+        config_content = f'''[central]
+base_url = "{self.odk_config['base_url']}"
+username = "{self.odk_config['username']}"
+password = "{self.odk_config['password']}"
+default_project_id = {self.odk_config['project_id']}
+'''
+        
+        # Write to temporary file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.toml', delete=False) as f:
+            f.write(config_content)
+            config_path = f.name
+        
+        try:
+            # Initialize client with config file
+            client = Client(
+                config_path=config_path,
+                project_id=int(self.odk_config['project_id'])
+            )
+            return client
+        finally:
+            # Clean up temporary file
+            try:
+                os.unlink(config_path)
+            except OSError:
+                pass
     
     def test_connection(self) -> bool:
         """
@@ -57,10 +106,12 @@ class ODKCentralClient:
         """
         try:
             # Try to get project information
-            project_id = self.odk_config['project_id']
+            project_id = int(self.odk_config['project_id'])
             project = self.client.projects.get(project_id)
             
-            logger.info(f"✅ Connection successful to project: {project['name']}")
+            # Access project name using dot notation for pyODK objects
+            project_name = getattr(project, 'name', f'Project {project_id}')
+            logger.info(f"✅ Connection successful to project: {project_name}")
             return True
             
         except PyODKError as e:
@@ -78,17 +129,28 @@ class ODKCentralClient:
             List of form metadata dictionaries
         """
         try:
-            project_id = self.odk_config['project_id']
+            project_id = int(self.odk_config['project_id'])
             forms = self.client.forms.list(project_id=project_id)
             
-            logger.info(f"Discovered {len(forms)} forms in project {project_id}")
+            # Convert pyODK form objects to dictionaries
+            form_list = []
+            for form in forms:
+                form_dict = {
+                    'xmlFormId': getattr(form, 'xmlFormId', 'unknown'),
+                    'name': getattr(form, 'name', 'Unnamed'),
+                    'version': getattr(form, 'version', 'unknown'),
+                    'state': getattr(form, 'state', 'unknown')
+                }
+                form_list.append(form_dict)
+            
+            logger.info(f"Discovered {len(form_list)} forms in project {project_id}")
             
             # Log form details
-            for form in forms:
-                logger.info(f"  - {form['xmlFormId']}: {form.get('name', 'Unnamed')} "
-                          f"(v{form.get('version', 'unknown')})")
+            for form in form_list:
+                logger.info(f"  - {form['xmlFormId']}: {form['name']} "
+                          f"(v{form['version']})")
             
-            return forms
+            return form_list
             
         except PyODKError as e:
             logger.error(f"Failed to discover forms: {str(e)}")
@@ -108,7 +170,7 @@ class ODKCentralClient:
             Number of submissions
         """
         try:
-            project_id = self.odk_config['project_id']
+            project_id = int(self.odk_config['project_id'])
             submissions = self.client.submissions.list(
                 project_id=project_id,
                 form_id=form_id
@@ -118,6 +180,211 @@ class ODKCentralClient:
         except PyODKError as e:
             logger.error(f"Failed to get submission count for {form_id}: {str(e)}")
             return 0
+    
+    def _process_odk_table_data(self, data: Dict[str, Any], form_id: str) -> Optional[pd.DataFrame]:
+        """
+        Process ODK table data to handle group headers and formatting issues
+        
+        Args:
+            data: Raw table data from ODK Central
+            form_id: Form ID for logging
+            
+        Returns:
+            Processed DataFrame or None if no valid data
+        """
+        try:
+            raw_data = data.get('value', [])
+            if not raw_data:
+                return None
+            
+            # Create initial DataFrame
+            df = pd.DataFrame(raw_data)
+            
+            if df.empty:
+                return None
+            
+            logger.info(f"Processing ODK table data for {form_id}: {len(df)} rows, {len(df.columns)} columns")
+            
+            # Handle column naming issues
+            if self.clean_column_headers:
+                df = self._fix_column_headers(df, form_id)
+            
+            # Remove completely empty columns that might result from group headers
+            if self.remove_empty_columns:
+                df = self._remove_empty_columns(df)
+            
+            # Clean up any remaining formatting issues
+            df = self._clean_data_values(df)
+            
+            logger.info(f"Processed data for {form_id}: {len(df)} rows, {len(df.columns)} columns after cleanup")
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error processing ODK table data for {form_id}: {str(e)}")
+            return None
+    
+    def _fix_column_headers(self, df: pd.DataFrame, form_id: str) -> pd.DataFrame:
+        """
+        Fix column header issues from ODK exports
+        
+        Args:
+            df: Raw DataFrame
+            form_id: Form ID for logging
+            
+        Returns:
+            DataFrame with fixed column headers
+        """
+        try:
+            # Check for unnamed columns and generate names
+            new_columns = []
+            unnamed_count = 0
+            
+            for i, col in enumerate(df.columns):
+                if pd.isna(col) or str(col).strip() == '' or str(col).startswith('Unnamed'):
+                    # Generate a meaningful name for unnamed columns
+                    unnamed_count += 1
+                    new_name = f"field_{i+1}_unnamed_{unnamed_count}"
+                    new_columns.append(new_name)
+                    logger.warning(f"Fixed unnamed column at position {i+1} → '{new_name}' in {form_id}")
+                else:
+                    # Clean existing column names
+                    clean_name = str(col).strip()
+                    # Remove group prefixes that might cause issues
+                    if '/' in clean_name:
+                        clean_name = clean_name.split('/')[-1]  # Use last part after group separator
+                    new_columns.append(clean_name)
+            
+            df.columns = new_columns
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error fixing column headers for {form_id}: {str(e)}")
+            return df
+    
+    def _remove_empty_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Remove columns that are completely empty (often from group headers)
+        
+        Args:
+            df: DataFrame to clean
+            
+        Returns:
+            DataFrame with empty columns removed
+        """
+        try:
+            # Identify completely empty columns
+            empty_cols = df.columns[df.isnull().all()].tolist()
+            
+            if empty_cols:
+                logger.info(f"Removing {len(empty_cols)} completely empty columns: {empty_cols}")
+                df = df.drop(columns=empty_cols)
+            
+            # Also remove columns that are all empty strings
+            string_empty_cols = []
+            for col in df.columns:
+                if df[col].dtype == 'object':
+                    if df[col].fillna('').str.strip().eq('').all():
+                        string_empty_cols.append(col)
+            
+            if string_empty_cols:
+                logger.info(f"Removing {len(string_empty_cols)} columns with only empty strings: {string_empty_cols}")
+                df = df.drop(columns=string_empty_cols)
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error removing empty columns: {str(e)}")
+            return df
+    
+    def _clean_data_values(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Clean up data values in the DataFrame
+        
+        Args:
+            df: DataFrame to clean
+            
+        Returns:
+            DataFrame with cleaned values
+        """
+        try:
+            # Convert object columns and clean up common ODK artifacts
+            for col in df.columns:
+                if df[col].dtype == 'object':
+                    # Remove leading/trailing whitespace
+                    df[col] = df[col].astype(str).str.strip()
+                    
+                    # Replace 'nan' strings with actual NaN
+                    df[col] = df[col].replace(['nan', 'None', ''], pd.NA)
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error cleaning data values: {str(e)}")
+            return df
+    
+    def _process_submissions_to_dataframe(self, submissions: List[Any], form_id: str) -> Optional[pd.DataFrame]:
+        """
+        Convert ODK submissions list to DataFrame (fallback method)
+        
+        Args:
+            submissions: List of submission objects from ODK
+            form_id: Form ID for logging
+            
+        Returns:
+            Processed DataFrame or None
+        """
+        try:
+            if not submissions:
+                return None
+            
+            # Convert submissions to list of dictionaries
+            submission_dicts = []
+            for submission in submissions:
+                if hasattr(submission, '__dict__'):
+                    submission_dicts.append(vars(submission))
+                elif isinstance(submission, dict):
+                    submission_dicts.append(submission)
+                else:
+                    # Try to convert pyODK object to dict
+                    try:
+                        submission_dict = {}
+                        for attr in dir(submission):
+                            if not attr.startswith('_'):
+                                try:
+                                    value = getattr(submission, attr)
+                                    if not callable(value):
+                                        submission_dict[attr] = value
+                                except:
+                                    continue
+                        submission_dicts.append(submission_dict)
+                    except:
+                        logger.warning(f"Could not convert submission object for {form_id}")
+                        continue
+            
+            if not submission_dicts:
+                return None
+            
+            # Create DataFrame
+            df = pd.DataFrame(submission_dicts)
+            
+            if df.empty:
+                return None
+            
+            logger.info(f"Converted {len(submissions)} submissions to DataFrame for {form_id}: {len(df.columns)} columns")
+            
+            # Apply same cleaning as table method
+            if self.clean_column_headers:
+                df = self._fix_column_headers(df, form_id)
+            if self.remove_empty_columns:
+                df = self._remove_empty_columns(df)
+            df = self._clean_data_values(df)
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error converting submissions to DataFrame for {form_id}: {str(e)}")
+            return None
     
     def download_form_data(
         self, 
@@ -137,7 +404,7 @@ class ODKCentralClient:
             Tuple of (file_path, download_metadata)
         """
         try:
-            project_id = self.odk_config['project_id']
+            project_id = int(self.odk_config['project_id'])
             
             logger.info(f"Downloading {format.upper()} data for form: {form_id}")
             
@@ -146,19 +413,66 @@ class ODKCentralClient:
             
             # Download submissions data
             if format.lower() == "csv":
-                data = self.client.submissions.get_table(
-                    project_id=project_id,
-                    form_id=form_id,
-                    format="csv"
-                )
-                
-                # Save to CSV file
-                filename = f"{form_id}.csv"
-                file_path = output_path / filename
-                
-                # Write CSV data
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(data)
+                # Try primary method first (get_table)
+                try:
+                    data = self.client.submissions.get_table(
+                        project_id=project_id,
+                        form_id=form_id
+                    )
+                    
+                    # Convert to DataFrame and save as CSV
+                    if 'value' in data and data['value']:
+                        # Process ODK table data to handle group headers and column formatting
+                        processed_data = self._process_odk_table_data(data, form_id)
+                        
+                        if processed_data is not None and not processed_data.empty:
+                            # Save to CSV file
+                            filename = f"{form_id}.csv"
+                            file_path = output_path / filename
+                            
+                            processed_data.to_csv(file_path, index=False, encoding='utf-8')
+                        else:
+                            logger.warning(f"No valid data found after processing for form: {form_id}")
+                            return None, None
+                    else:
+                        # No data available
+                        logger.warning(f"No submissions found for form: {form_id}")
+                        return None, None
+                        
+                except Exception as table_error:
+                    logger.warning(f"get_table() failed for {form_id}: {str(table_error)}")
+                    
+                    if self.use_fallback_export:
+                        logger.info(f"Attempting alternative CSV export method for {form_id}")
+                        
+                        # Fallback to list submissions and convert
+                        try:
+                            submissions = self.client.submissions.list(
+                                project_id=project_id,
+                                form_id=form_id
+                            )
+                            
+                            if submissions:
+                                # Convert submissions to DataFrame
+                                processed_data = self._process_submissions_to_dataframe(submissions, form_id)
+                                
+                                if processed_data is not None and not processed_data.empty:
+                                    filename = f"{form_id}.csv"
+                                    file_path = output_path / filename
+                                    processed_data.to_csv(file_path, index=False, encoding='utf-8')
+                                else:
+                                    logger.warning(f"No valid data from fallback method for form: {form_id}")
+                                    return None, None
+                            else:
+                                logger.warning(f"No submissions found for form: {form_id}")
+                                return None, None
+                                
+                        except Exception as fallback_error:
+                            logger.error(f"Both CSV export methods failed for {form_id}: {str(fallback_error)}")
+                            raise
+                    else:
+                        logger.error(f"CSV export failed for {form_id} and fallback is disabled")
+                        raise table_error
                 
             elif format.lower() == "json":
                 data = self.client.submissions.list(

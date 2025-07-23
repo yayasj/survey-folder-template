@@ -23,7 +23,9 @@ team:
 odk:
   base_url: "{{cookiecutter.odk_central_url}}"
   # Credentials loaded from environment variables:
-  # ODK_USERNAME, ODK_PASSWORD, ODK_PROJECT_ID
+  username: "${ODK_USERNAME}"
+  password: "${ODK_PASSWORD}"
+  project_id: "${ODK_PROJECT_ID}"
   
   # List of forms to download (will be auto-discovered if empty)
   forms: []
@@ -33,78 +35,11 @@ odk:
   
   # Include media attachments
   include_attachments: false
-
-# Administrative columns to append to failed row extracts
-admin_columns:
-  - "submission_uuid"
-  - "submission_date" 
-  - "enumerator"
-  - "household_id"
-  - "gps_latitude"
-  - "gps_longitude"
-
-# Dataset definitions
-datasets:
-  # Example dataset configuration
-  household_roster:
-    file_pattern: "*roster*.csv"
-    primary_key: ["household_id", "member_id"]
-    validation_suite: "roster_suite"
-    
-  gps_locations:
-    file_pattern: "*gps*.csv" 
-    primary_key: ["household_id"]
-    validation_suite: "gps_suite"
-
-# Validation settings
-validation:
-  # Fail pipeline if structural checks fail
-  abort_on_structural_failure: true
   
-  # Continue with business logic checks even if some fail
-  continue_on_business_logic_failure: true
-  
-  # Minimum pass rate to proceed to cleaning (%)
-  minimum_pass_rate: 85
-
-# Cleaning settings
-cleaning:
-  # Maximum iterations to attempt cleaning
-  max_iterations: 5
-  
-  # Create backup before cleaning
-  create_backup: true
-  
-  # Rules file location
-  rules_file: "cleaning_rules.xlsx"
-
-# Publishing settings
-publish:
-  # Atomic swap directory
-  stable_directory: "cleaned_stable"
-  
-  # Backup previous version
-  backup_previous: true
-  
-  # Notification settings
-  notify_on_success: true
-  notify_on_failure: true
-
-# Streamlit dashboard settings
-dashboard:
-  port: {{cookiecutter.streamlit_port}}
-  title: "{{cookiecutter.project_name}} - Data Dashboard"
-  refresh_interval: 300  # seconds
-  
-  # Branding
-  logo_path: "assets/logo.png"
-  
-  # Features to enable
-  features:
-    submission_trends: true
-    quality_metrics: true
-    geographical_view: true
-    enumerator_performance: true
+  # Data processing options for handling ODK export issues
+  clean_column_headers: true      # Fix unnamed columns and group header issues
+  remove_empty_columns: true      # Remove completely empty columns from exports
+  use_fallback_export: true       # Use alternative export method if primary fails
 
 # Pipeline configuration
 staging:
@@ -125,26 +60,27 @@ validation:
   minimum_pass_rate: 85.0  # Minimum % of expectations that must pass
   fail_fast_on_critical: true  # Stop pipeline on critical validation failures
   save_failed_rows: true  # Extract failed rows to separate files
+  abort_on_structural_failure: true
+  continue_on_business_logic_failure: true
+  max_iterations: 5
+  create_backup: true
+  rules_file: "cleaning_rules.xlsx"
   
 # Dataset configurations with validation suites
 datasets:
-  household_surveys:
-    file_pattern: "*household*.csv"
-    validation_suite: "household_survey_validation"
+  household_dataset:
+    file_pattern: "household*.csv"
+    validation_suite: "household_suite"
     cleaning_rules: "household_cleaning_rules.xlsx"
     required: true
+    primary_key: ["household_id", "submission_uuid"]
     
-  baseline_assessments:
-    file_pattern: "*baseline*.csv"
-    validation_suite: "baseline_assessment_validation"
-    cleaning_rules: "baseline_cleaning_rules.xlsx"
-    required: false
-    
-  monitoring_data:
-    file_pattern: "*monitoring*.csv"
-    validation_suite: "household_survey_validation"  # Reuse household validation
-    cleaning_rules: "monitoring_cleaning_rules.xlsx"
-    required: false
+  individual_dataset:
+    file_pattern: "individual*.csv"
+    validation_suite: "individual_suite"
+    cleaning_rules: "individual_cleaning_rules.xlsx"
+    required: true
+    primary_key: ["respondent_id"]
 
 # Administrative columns to include in failed row extracts
 admin_columns:
@@ -153,36 +89,49 @@ admin_columns:
   - "enumerator_id"
   - "supervisor_id"
   - "form_version"
-  
-  # Log retention (days)
-  retention_days: 30
-  
-  # Log file locations
-  files:
-    ingestion: "logs/ingest_{date}.log"
-    validation: "logs/validate_{date}.log" 
-    cleaning: "logs/clean_{date}.log"
-    publish: "logs/publish_{date}.log"
+  - "submission_uuid"
+  - "submission_date"
+  - "gps_latitude"
+  - "gps_longitude"
+
+# Publishing settings
+publish:
+  stable_directory: "cleaned_stable"
+  backup_previous: true
+  notify_on_success: true
+  notify_on_failure: true
+
+# Streamlit dashboard settings
+dashboard:
+  port: 8501  # Default port, override with STREAMLIT_SERVER_PORT
+  title: "{{cookiecutter.project_name}} - Data Dashboard"
+  refresh_interval: 300  # seconds
+  logo_path: "assets/logo.png"
+  features:
+    submission_trends: true
+    quality_metrics: true
+    geographical_view: true
+    enumerator_performance: true
 
 # Prefect settings
 prefect:
-  # Flow settings
   flow_name: "{{cookiecutter.project_slug}}_pipeline"
-  
-  # Retry settings
   max_retries: 3
   retry_delay: 60  # seconds
-  
-  # Concurrency
   max_concurrent_tasks: 2
-  
+
 # Performance tuning
 performance:
-  # Chunk size for large datasets
   chunk_size: 10000
-  
-  # Memory limit (MB) 
   memory_limit: 4096
-  
-  # Parallel processing
   n_workers: 2
+
+# Log retention (days)
+retention_days: 30
+  
+# Log file locations
+log_files:
+  ingestion: "logs/ingest_{date}.log"
+  validation: "logs/validate_{date}.log" 
+  cleaning: "logs/clean_{date}.log"
+  publish: "logs/publish_{date}.log"
