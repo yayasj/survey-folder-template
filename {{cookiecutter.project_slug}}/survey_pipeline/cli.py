@@ -369,19 +369,83 @@ def clean(ctx, rules_file, max_iterations, dry_run):
 
 @cli.command()
 @click.option('--force', is_flag=True, help='Force publish even if validation fails')
+@click.option('--dry-run', is_flag=True, help='Show what would be published without actually publishing')
 @click.pass_context
-def publish(ctx, force):
+def publish(ctx, force, dry_run):
     """Publish cleaned data to stable directory"""
+    import sys
+    from pathlib import Path
+    from .publishing import create_publishing_engine
+    from .utils import create_run_timestamp, setup_logging
+    
     config = ctx.obj['config']
+    
+    # Setup logging
+    setup_logging(level="INFO")
     
     click.echo("📤 Publishing cleaned data...")
     
     if force:
         click.echo("⚠️  Force mode enabled - skipping validation checks")
     
-    # This will be implemented in the next iteration
-    click.echo("⚠️  Data publishing not yet implemented")
-    click.echo("Will implement atomic directory swap in next iteration")
+    if dry_run:
+        click.echo("🔍 Dry run mode - no actual changes will be made")
+    
+    try:
+        # Create publishing engine
+        project_root = Path.cwd()
+        engine = create_publishing_engine(project_root=project_root)
+        
+        # Create run timestamp
+        run_timestamp = create_run_timestamp()
+        
+        if dry_run:
+            # Show what would be published
+            validation_results = engine.validate_staging_data()
+            
+            click.echo("\n📋 Publication Preview:")
+            click.echo("=" * 50)
+            
+            if validation_results['valid']:
+                click.echo(f"✅ Staging data is valid for publication")
+                click.echo(f"📊 Total datasets: {len(validation_results['datasets_found'])}")
+                click.echo(f"📈 Total records: {validation_results['total_records']}")
+                
+                for dataset in validation_results['datasets_found']:
+                    click.echo(f"  📄 {dataset['file']}: {dataset['records']} records")
+            else:
+                click.echo("❌ Staging data has validation issues:")
+                for issue in validation_results['issues']:
+                    click.echo(f"  ⚠️  {issue}")
+            
+            # Show publication status
+            status = engine.get_publication_status()
+            click.echo(f"\n📁 Target directory: {status['stable_directory_path']}")
+            click.echo(f"🔄 Would backup existing data: {engine.backup_previous}")
+            
+            return
+        
+        # Perform actual publication
+        result = engine.publish_data(run_timestamp, force=force)
+        
+        if result['success']:
+            click.echo("✅ Data published successfully!")
+            click.echo(f"📊 Datasets published: {result['datasets_published']}")
+            click.echo(f"📈 Total records: {result['total_records']}")
+            
+            if result['backup_path']:
+                click.echo(f"💾 Backup created: {result['backup_path']}")
+        else:
+            click.echo(f"❌ Publication failed: {result['error']}")
+            if 'issues' in result:
+                click.echo("Issues found:")
+                for issue in result['issues']:
+                    click.echo(f"  ⚠️  {issue}")
+            sys.exit(1)
+            
+    except Exception as e:
+        click.echo(f"❌ Publication error: {str(e)}")
+        sys.exit(1)
 
 @cli.command()
 @click.option('--skip-validation', is_flag=True, help='Skip validation step')
@@ -407,52 +471,185 @@ def run_pipeline(ctx, skip_validation, skip_cleaning):
     click.echo(f"Pipeline steps: {' -> '.join(steps)}")
 
 @cli.command()
-@click.option('--to', help='Rollback to specific date (YYYY-MM-DD)')
+@click.option('--to', help='Rollback to specific timestamp (YYYY-MM-DD_HH-MM-SS)')
+@click.option('--list-backups', is_flag=True, help='List available backups')
 @click.pass_context
-def rollback(ctx, to):
+def rollback(ctx, to, list_backups):
     """Rollback to previous stable data"""
+    from pathlib import Path
+    from .publishing import create_publishing_engine
     
-    if not to:
-        click.echo("❌ Please specify rollback date with --to YYYY-MM-DD")
-        return
-    
-    click.echo(f"🔄 Rolling back to: {to}")
-    
-    # This will be implemented in the next iteration
-    click.echo("⚠️  Rollback not yet implemented")
-    click.echo("Will implement backup/restore functionality in next iteration")
-
-@cli.command()
-@click.pass_context
-def status(ctx):
-    """Show pipeline status and recent activity"""
     config = ctx.obj['config']
-    
-    click.echo("📊 Pipeline Status")
-    click.echo("=" * 50)
-    
-    # Check directory status
-    directories = [
-        ("Raw Data", "raw"),
-        ("Staging", "staging"),
-        ("Cleaned Stable", "cleaned_stable"),
-        ("Validation Results", "validation_results"),
-        ("Logs", "logs")
-    ]
-    
     project_root = Path.cwd()
     
-    for name, dirname in directories:
-        dir_path = project_root / dirname
-        if dir_path.exists():
-            files = list(dir_path.glob("*"))
-            click.echo(f"✅ {name}: {len(files)} items")
-        else:
-            click.echo(f"❌ {name}: Directory not found")
+    if list_backups:
+        click.echo("📦 Available backups:")
+        
+        # List backup directories
+        backup_pattern = "stable_backup_*"
+        backups = list(project_root.glob(f"**/{backup_pattern}"))
+        
+        if not backups:
+            click.echo("  No backups found")
+            return
+        
+        # Sort by modification time
+        backups.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+        
+        for backup in backups:
+            timestamp = backup.name.replace('stable_backup_', '')
+            modified = backup.stat().st_mtime
+            from datetime import datetime
+            mod_date = datetime.fromtimestamp(modified).strftime('%Y-%m-%d %H:%M:%S')
+            click.echo(f"  📅 {timestamp} (created: {mod_date})")
+        
+        return
     
-    click.echo("\n📈 Recent Activity")
-    click.echo("-" * 30)
-    click.echo("⚠️  Activity tracking not yet implemented")
+    if not to:
+        click.echo("❌ Please specify a timestamp to rollback to or use --list-backups")
+        click.echo("Example: python -m survey_pipeline.cli rollback --to 2025-07-24_14-30-15")
+        return
+    
+    try:
+        engine = create_publishing_engine(project_root=project_root)
+        result = engine.rollback_publication(to)
+        
+        if result['success']:
+            click.echo(f"✅ Successfully rolled back to: {to}")
+            if result['current_backup']:
+                click.echo(f"💾 Current data backed up to: {result['current_backup']}")
+        else:
+            click.echo(f"❌ Rollback failed: {result['error']}")
+            
+    except Exception as e:
+        click.echo(f"❌ Rollback error: {str(e)}")
+
+@cli.command()
+@click.option('--format', 'output_format', type=click.Choice(['table', 'json']), default='table', help='Output format')
+@click.pass_context
+def status(ctx, output_format):
+    """Show pipeline status and recent activity"""
+    from pathlib import Path
+    from .publishing import create_publishing_engine
+    
+    config = ctx.obj['config']
+    project_root = Path.cwd()
+    
+    try:
+        # Get publication status
+        engine = create_publishing_engine(project_root=project_root)
+        pub_status = engine.get_publication_status()
+        publications = engine.list_publications()
+        
+        if output_format == 'json':
+            import json
+            status_data = {
+                'directories': {},
+                'publication_status': pub_status,
+                'recent_publications': publications[:3]
+            }
+            
+            # Directory status
+            directories = [
+                ("raw", "raw"),
+                ("staging", "staging"),
+                ("cleaned_stable", "cleaned_stable"),
+                ("validation_results", "validation_results"),
+                ("logs", "logs")
+            ]
+            
+            for name, dirname in directories:
+                dir_path = project_root / dirname
+                status_data['directories'][name] = {
+                    'exists': dir_path.exists(),
+                    'path': str(dir_path),
+                    'item_count': len(list(dir_path.glob("*"))) if dir_path.exists() else 0
+                }
+            
+            click.echo(json.dumps(status_data, indent=2, default=str))
+            return
+        
+        # Table format
+        click.echo("📊 Pipeline Status")
+        click.echo("=" * 50)
+        
+        # Directory status
+        directories = [
+            ("Raw Data", "raw"),
+            ("Staging", "staging"),
+            ("Cleaned Stable", "cleaned_stable"),
+            ("Validation Results", "validation_results"),
+            ("Logs", "logs")
+        ]
+        
+        click.echo("\n📁 Directory Status:")
+        for name, dirname in directories:
+            dir_path = project_root / dirname
+            if dir_path.exists():
+                files = list(dir_path.glob("*"))
+                click.echo(f"  ✅ {name}: {len(files)} items")
+            else:
+                click.echo(f"  ❌ {name}: Directory not found")
+        
+        # Publication status
+        click.echo(f"\n� Publication Status:")
+        click.echo(f"  📁 Stable directory: {'✅' if pub_status['stable_directory_exists'] else '❌'}")
+        click.echo(f"  🚀 Staging ready: {'✅' if pub_status['staging_ready'] else '❌'}")
+        click.echo(f"  �📈 Current records: {pub_status['total_records']}")
+        
+        # Last publication
+        if pub_status['last_publication']:
+            last_pub = pub_status['last_publication']
+            pub_date = last_pub['publication_date'][:19]
+            click.echo(f"  🕒 Last publication: {pub_date}")
+        else:
+            click.echo(f"  🕒 Last publication: None")
+        
+        # Recent activity
+        if publications:
+            click.echo(f"\n📋 Recent Publications ({min(3, len(publications))}):")
+            for pub in publications[:3]:
+                pub_date = pub['publication_date'][:19]
+                click.echo(f"  📅 {pub_date}: {len(pub['datasets_published'])} datasets")
+        
+    except Exception as e:
+        click.echo(f"❌ Status error: {str(e)}")
+
+# Add new commands for publication management
+@cli.command()
+@click.pass_context  
+def list_publications(ctx):
+    """List recent publications with metadata"""
+    from pathlib import Path
+    from .publishing import create_publishing_engine
+    
+    try:
+        project_root = Path.cwd()
+        engine = create_publishing_engine(project_root=project_root)
+        
+        publications = engine.list_publications()
+        
+        if not publications:
+            click.echo("📭 No publications found")
+            return
+        
+        click.echo(f"📋 Publication History ({len(publications)} publications)")
+        click.echo("=" * 70)
+        
+        for i, pub in enumerate(publications):
+            click.echo(f"\n{i+1}. Publication: {pub['publication_timestamp']}")
+            click.echo(f"   📅 Date: {pub['publication_date']}")
+            click.echo(f"   📊 Datasets: {len(pub['datasets_published'])}")
+            click.echo(f"   📈 Records: {pub['total_records_published']}")
+            click.echo(f"   💾 Backup: {'Yes' if pub['backup_created'] else 'No'}")
+            
+            if pub['datasets_published']:
+                click.echo("   📄 Files:")
+                for dataset in pub['datasets_published']:
+                    click.echo(f"     • {dataset['file']}: {dataset['records']} records")
+        
+    except Exception as e:
+        click.echo(f"❌ Error listing publications: {str(e)}")
 
 if __name__ == '__main__':
     cli()

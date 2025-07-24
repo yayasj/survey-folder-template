@@ -131,16 +131,44 @@ publish:
 	@echo "📤 Publishing cleaned data..."
 	$(PYTHON) -m survey_pipeline.cli publish
 
+publish-dry-run:
+	@echo "🔍 Previewing publication..."
+	$(PYTHON) -m survey_pipeline.cli publish --dry-run
+
+publish-force:
+	@echo "⚠️  Force publishing data..."
+	$(PYTHON) -m survey_pipeline.cli publish --force
+
+# Publication management
+publication-status:
+	@echo "📊 Checking publication status..."
+	$(PYTHON) -m survey_pipeline.cli status
+
+list-publications:
+	@echo "📋 Listing recent publications..."
+	$(PYTHON) -m survey_pipeline.cli list-publications
+
+list-backups:
+	@echo "📦 Listing available backups..."
+	$(PYTHON) -m survey_pipeline.cli rollback --list-backups
+
+rollback:
+	@echo "🔄 Rolling back publication..."
+	@echo "Usage: make rollback-to TIMESTAMP=2025-07-24_14-30-15"
+
+rollback-to:
+	@if [ -z "$(TIMESTAMP)" ]; then \
+		echo "❌ Please specify TIMESTAMP. Example: make rollback-to TIMESTAMP=2025-07-24_14-30-15"; \
+		exit 1; \
+	fi
+	$(PYTHON) -m survey_pipeline.cli rollback --to $(TIMESTAMP)
+
 # Backup and rollback
 backup:
 	@echo "💾 Creating backup..."
 	@timestamp=$$(date +%Y%m%d_%H%M%S); \
 	tar -czf backup_$${timestamp}.tar.gz cleaned_stable/ validation_results/ logs/; \
 	echo "✅ Backup created: backup_$${timestamp}.tar.gz"
-
-rollback:
-	@echo "🔄 Rolling back to previous version..."
-	$(PYTHON) -m survey_pipeline.cli rollback --to $(DATE)
 
 # Development helpers
 install-dev:

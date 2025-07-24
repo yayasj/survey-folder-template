@@ -9,9 +9,11 @@ __email__ = "data@2mcorp.com"
 
 from .config import load_config
 from .utils import setup_logging, get_project_root
+from .publishing import create_publishing_engine
 
 __all__ = [
     "load_config",
     "setup_logging", 
-    "get_project_root"
+    "get_project_root",
+    "create_publishing_engine"
 ]

@@ -1,7 +1,0 @@
-variable,new_value,note,priority
-gender,Female,respondent_id == 'HH001_M001',1
-age,25,respondent_id == 'HH002_F001',1
-income,50000,income > 1000000,2
-education,Primary,age < 18,3
-occupation,Student,row_index == 15,4
-marital_status,Single,all_null,5

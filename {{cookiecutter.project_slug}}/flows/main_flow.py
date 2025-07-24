@@ -189,32 +189,58 @@ def publish_data(setup_data: Dict[str, Any], cleaning_results: Dict[str, Any]) -
     logger = get_run_logger()
     config = setup_data['config']
     run_timestamp = setup_data['run_timestamp']
+    project_root = Path(setup_data['project_root'])
     
     try:
         logger.info("Starting data publishing")
         
-        # TODO: Implement atomic publishing engine
-        # This will:
-        # 1. Validate cleaned data is ready
-        # 2. Create backup of current production data
-        # 3. Atomically swap staging to production
-        # 4. Update metadata and indexes
+        # Import publishing engine
+        from survey_pipeline.publishing import PublishingEngine
         
-        logger.warning("Atomic publishing engine not yet implemented")
+        # Create publishing engine
+        engine = PublishingEngine(config, project_root)
         
-        # Placeholder results
-        publishing_results = {
-            'status': 'placeholder',
-            'published_datasets': 0,
-            'backup_created': False,
-            'publication_timestamp': run_timestamp
-        }
+        # Check if cleaning was successful
+        if not cleaning_results.get('success', False):
+            logger.warning("Cleaning failed, skipping publication")
+            return {
+                'success': False,
+                'error': 'Cleaning step failed, cannot publish',
+                'run_timestamp': run_timestamp
+            }
+        
+        # Publish data
+        result = engine.publish_data(run_timestamp, force=False)
+        
+        if result['success']:
+            logger.info(f"✅ Data published successfully - {result['datasets_published']} datasets, {result['total_records']} records")
+            
+            publishing_results = {
+                'status': 'success',
+                'published_datasets': result['datasets_published'],
+                'total_records': result['total_records'],
+                'backup_created': result['backup_path'] is not None,
+                'backup_path': result['backup_path'],
+                'publication_timestamp': run_timestamp,
+                'metadata': result['metadata']
+            }
+        else:
+            logger.error(f"❌ Publication failed: {result['error']}")
+            publishing_results = {
+                'status': 'failed',
+                'error': result['error'],
+                'publication_timestamp': run_timestamp
+            }
         
         return publishing_results
         
     except Exception as e:
         logger.error(f"Data publishing failed: {str(e)}")
-        raise
+        return {
+            'status': 'error',
+            'error': str(e),
+            'publication_timestamp': run_timestamp
+        }
 
 @task
 def send_notification(
@@ -494,8 +520,8 @@ def clean_data(config: Dict[str, Any], run_timestamp: str, validation_passed: bo
     return cleaning_results['cleaning_successful']
 
 @task(name="publish_data", retries=1)
-def publish_data(config: Dict[str, Any], run_timestamp: str, cleaning_passed: bool) -> bool:
-    """Atomically publish cleaned data to stable directory"""
+def publish_data_simple(config: Dict[str, Any], run_timestamp: str, cleaning_passed: bool) -> bool:
+    """Atomically publish cleaned data to stable directory (simple version)"""
     logger = get_run_logger()
     
     if not cleaning_passed:
@@ -504,33 +530,26 @@ def publish_data(config: Dict[str, Any], run_timestamp: str, cleaning_passed: bo
     
     logger.info(f"Starting data publication for run: {run_timestamp}")
     
-    staging_cleaned = project_root / "staging" / "cleaned"
-    stable_path = project_root / "cleaned_stable"
-    
-    # Create backup of current stable data if it exists
-    if stable_path.exists() and any(stable_path.iterdir()):
-        backup_path = project_root / f"backup_stable_{run_timestamp}"
-        logger.info(f"Creating backup: {backup_path}")
+    try:
+        # Import publishing engine
+        from survey_pipeline.publishing import PublishingEngine
+        from pathlib import Path
         
-        import shutil
-        shutil.copytree(stable_path, backup_path)
-    
-    # Atomic swap - create new stable directory
-    stable_temp = project_root / f"cleaned_stable_temp_{run_timestamp}"
-    
-    if staging_cleaned.exists():
-        import shutil
-        shutil.copytree(staging_cleaned, stable_temp)
+        project_root = Path.cwd()
+        engine = PublishingEngine(config, project_root)
         
-        # Remove old stable and rename temp to stable
-        if stable_path.exists():
-            shutil.rmtree(stable_path)
-        stable_temp.rename(stable_path)
+        # Publish data
+        result = engine.publish_data(run_timestamp, force=False)
         
-        logger.info("Data published successfully to cleaned_stable/")
-        return True
-    else:
-        logger.error("No cleaned data found in staging area")
+        if result['success']:
+            logger.info(f"✅ Data published successfully - {result['datasets_published']} datasets")
+            return True
+        else:
+            logger.error(f"❌ Publication failed: {result['error']}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Publication error: {str(e)}")
         return False
 
 @flow(
@@ -553,7 +572,7 @@ def main_pipeline_flow() -> Dict[str, Any]:
     run_timestamp = ingest_data(config)
     validation_passed = validate_data(config, run_timestamp)
     cleaning_passed = clean_data(config, run_timestamp, validation_passed)
-    publish_success = publish_data(config, run_timestamp, cleaning_passed)
+    publish_success = publish_data_simple(config, run_timestamp, cleaning_passed)
     
     # Summary results
     results = {
