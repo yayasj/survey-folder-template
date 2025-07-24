@@ -218,11 +218,20 @@ class DataCleaningEngine:
             elif rule_type == 'parse_date':
                 changes_made = self._apply_parse_date_rule(df, variable, parameters)
                 
-            elif rule_type == 'flag_outliers':
-                changes_made = self._apply_flag_outliers_rule(df, variable, parameters)
+            elif rule_type == 'proper':
+                changes_made = self._apply_proper_rule(df, variable)
+                
+            elif rule_type == 'lower':
+                changes_made = self._apply_lower_rule(df, variable)
+                
+            elif rule_type == 'upper':
+                changes_made = self._apply_upper_rule(df, variable)
+                
+            elif rule_type == 'regex_replace':
+                changes_made = self._apply_regex_replace_rule(df, variable, parameters, new_value)
                 
             elif rule_type == 'manual':
-                changes_made = self._apply_manual_rule(df, variable, new_value, note)
+                changes_made = self._apply_manual_rule(df, variable, parameters, new_value, note)
                 
             else:
                 logger.warning(f"Unknown rule type: {rule_type}")
@@ -378,55 +387,175 @@ class DataCleaningEngine:
             logger.error(f"Failed to apply parse_date rule: {str(e)}")
             return 0
     
-    def _apply_flag_outliers_rule(self, df: pd.DataFrame, variable: str, parameters: str) -> int:
-        """Flag outliers for review (adds a flag column)"""
+    def _apply_proper_rule(self, df: pd.DataFrame, variable: str) -> int:
+        """Apply proper case formatting (Title Case) to string values"""
         try:
-            params = self._parse_parameters(parameters)
-            method = params.get('method', 'iqr')
-            threshold = float(params.get('threshold', 3.0))
+            if not pd.api.types.is_string_dtype(df[variable]):
+                df[variable] = df[variable].astype(str)
             
-            # Only apply to numeric columns
-            if not pd.api.types.is_numeric_dtype(df[variable]):
-                df[variable] = pd.to_numeric(df[variable], errors='coerce')
+            original_values = df[variable].copy()
+            df[variable] = df[variable].str.title()
             
-            flag_column = f"{variable}_outlier_flag"
-            
-            if method == 'iqr':
-                Q1 = df[variable].quantile(0.25)
-                Q3 = df[variable].quantile(0.75)
-                IQR = Q3 - Q1
-                outlier_mask = (df[variable] < (Q1 - threshold * IQR)) | (df[variable] > (Q3 + threshold * IQR))
-            else:
-                # Z-score method
-                z_scores = np.abs((df[variable] - df[variable].mean()) / df[variable].std())
-                outlier_mask = z_scores > threshold
-            
-            df[flag_column] = outlier_mask
-            changes = outlier_mask.sum()
-            
-            logger.debug(f"Flagged {changes} outliers in {variable} using {method} method")
+            changes = (original_values != df[variable]).sum()
+            logger.debug(f"Applied proper case to {changes} values in {variable}")
             return changes
             
         except Exception as e:
-            logger.error(f"Failed to apply flag_outliers rule: {str(e)}")
+            logger.error(f"Failed to apply proper rule: {str(e)}")
             return 0
     
-    def _apply_manual_rule(self, df: pd.DataFrame, variable: str, new_value: str, note: str) -> int:
-        """Apply manual correction based on note pattern"""
+    def _apply_lower_rule(self, df: pd.DataFrame, variable: str) -> int:
+        """Apply lowercase formatting to string values"""
         try:
-            # Extract conditions from note (e.g., "Fix specific incorrect gender entry for HH001_M001")
-            # This is a simplified implementation - could be enhanced for more complex conditions
+            if not pd.api.types.is_string_dtype(df[variable]):
+                df[variable] = df[variable].astype(str)
             
+            original_values = df[variable].copy()
+            df[variable] = df[variable].str.lower()
+            
+            changes = (original_values != df[variable]).sum()
+            logger.debug(f"Applied lowercase to {changes} values in {variable}")
+            return changes
+            
+        except Exception as e:
+            logger.error(f"Failed to apply lower rule: {str(e)}")
+            return 0
+    
+    def _apply_upper_rule(self, df: pd.DataFrame, variable: str) -> int:
+        """Apply uppercase formatting to string values"""
+        try:
+            if not pd.api.types.is_string_dtype(df[variable]):
+                df[variable] = df[variable].astype(str)
+            
+            original_values = df[variable].copy()
+            df[variable] = df[variable].str.upper()
+            
+            changes = (original_values != df[variable]).sum()
+            logger.debug(f"Applied uppercase to {changes} values in {variable}")
+            return changes
+            
+        except Exception as e:
+            logger.error(f"Failed to apply upper rule: {str(e)}")
+            return 0
+    
+    def _apply_regex_replace_rule(self, df: pd.DataFrame, variable: str, parameters: str, new_value: str) -> int:
+        """Apply regex-based string replacement"""
+        try:
+            # Allow empty string replacements for regex (e.g., removing characters)
+            if new_value is None or pd.isna(new_value):
+                return 0
+            
+            # Parse parameters for regex patterns
+            params = self._parse_parameters(parameters)
+            
+            if not pd.api.types.is_string_dtype(df[variable]):
+                df[variable] = df[variable].astype(str)
+            
+            original_values = df[variable].copy()
+            changes = 0
+            
+            # Apply different regex matching strategies
+            if 'exact' in params:
+                # Exact match: replace entire value if it matches exactly
+                pattern = params['exact']
+                mask = df[variable] == pattern
+                df.loc[mask, variable] = new_value
+                changes = mask.sum()
+                logger.debug(f"Applied exact match '{pattern}' -> '{new_value}': {changes} changes")
+                
+            elif 'startswith' in params:
+                # Replace values that start with pattern
+                pattern = params['startswith']
+                mask = df[variable].str.startswith(pattern, na=False)
+                df.loc[mask, variable] = new_value
+                changes = mask.sum()
+                logger.debug(f"Applied startswith '{pattern}' -> '{new_value}': {changes} changes")
+                
+            elif 'endswith' in params:
+                # Replace values that end with pattern
+                pattern = params['endswith']
+                mask = df[variable].str.endswith(pattern, na=False)
+                df.loc[mask, variable] = new_value
+                changes = mask.sum()
+                logger.debug(f"Applied endswith '{pattern}' -> '{new_value}': {changes} changes")
+                
+            elif 'contains' in params:
+                # Replace values that contain pattern
+                pattern = params['contains']
+                mask = df[variable].str.contains(pattern, na=False, regex=False)
+                df.loc[mask, variable] = new_value
+                changes = mask.sum()
+                logger.debug(f"Applied contains '{pattern}' -> '{new_value}': {changes} changes")
+                
+            elif 'regex' in params:
+                # Full regex replacement within the string
+                pattern = params['regex']
+                df[variable] = df[variable].str.replace(pattern, new_value, regex=True)
+                changes = (original_values != df[variable]).sum()
+                logger.debug(f"Applied regex '{pattern}' -> '{new_value}': {changes} changes")
+                
+            else:
+                logger.warning(f"No valid regex pattern found in parameters: {parameters}")
+                return 0
+            
+            return changes
+            
+        except Exception as e:
+            logger.error(f"Failed to apply regex_replace rule: {str(e)}")
+            return 0
+    
+    def _apply_manual_rule(self, df: pd.DataFrame, variable: str, parameters: str, new_value: str, note: str) -> int:
+        """Apply manual correction based on parameters specification"""
+        try:
             if not new_value or pd.isna(new_value):
                 return 0
             
-            # For demonstration, apply to any null values
-            mask = df[variable].isna()
-            changes = mask.sum()
+            # Parse parameters to determine targeting method
+            params = self._parse_parameters(parameters) if parameters and not pd.isna(parameters) else {}
             
+            if not params:
+                # Default: Target null values if no parameters specified
+                mask = df[variable].isna()
+            else:
+                # Build constraint mask based on parameters
+                mask = pd.Series([True] * len(df))  # Start with all True, then apply constraints
+                
+                for constraint_field, constraint_value in params.items():
+                    if constraint_field in df.columns:
+                        # Apply constraint: field must equal the specified value
+                        field_mask = df[constraint_field].astype(str) == constraint_value
+                        mask = mask & field_mask
+                        logger.debug(f"Applied constraint {constraint_field}='{constraint_value}': {field_mask.sum()} matches")
+                    else:
+                        logger.warning(f"Constraint field '{constraint_field}' not found in dataset")
+                        return 0
+            
+            # Apply changes to matching records
+            changes = mask.sum()
             if changes > 0:
-                df.loc[mask, variable] = new_value
+                # Handle data type conversion for numeric columns
+                if pd.api.types.is_numeric_dtype(df[variable]):
+                    try:
+                        # Try to convert new_value to appropriate numeric type
+                        if df[variable].dtype == 'int64':
+                            converted_value = int(float(new_value))
+                        else:
+                            converted_value = float(new_value)
+                        df.loc[mask, variable] = converted_value
+                    except (ValueError, OverflowError):
+                        # If conversion fails, convert column to object and use string
+                        df[variable] = df[variable].astype('object')
+                        df.loc[mask, variable] = new_value
+                else:
+                    # For non-numeric columns, use string value directly
+                    df.loc[mask, variable] = new_value
+                
                 logger.debug(f"Applied manual rule to {changes} values in {variable}: {note}")
+                
+                # Log which records were changed for audit
+                if changes <= 10:  # Only log details for small number of changes
+                    changed_indices = mask[mask].index.tolist()
+                    logger.debug(f"Changed rows: {changed_indices}")
             
             return changes
             

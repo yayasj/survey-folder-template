@@ -288,14 +288,25 @@ def clean(ctx, rules_file, max_iterations, dry_run):
     try:
         from survey_pipeline.cleaning import DataCleaningEngine
         from survey_pipeline.utils import create_run_timestamp
+        from datetime import datetime
         
         run_timestamp = create_run_timestamp()
+        
+        # Set up cleaning-specific logging
+        log_files = config.get('log_files', {})
+        cleaning_log = log_files.get('cleaning', 'logs/clean_{date}.log')
+        cleaning_log_path = cleaning_log.format(date=datetime.now().strftime('%Y-%m-%d'))
+        
+        # Reconfigure logging to include cleaning log file
+        log_level = "DEBUG" if ctx.parent.params.get('verbose') else "INFO"
+        setup_logging(level=log_level, log_file=cleaning_log_path)
         
         # Initialize cleaning engine
         project_root = Path.cwd()
         cleaning_engine = DataCleaningEngine(config, project_root)
         
         click.echo("🧹 Starting data cleaning...")
+        click.echo(f"📝 Logging to: {cleaning_log_path}")
         click.echo(f"Rules file: {rules_file}")
         click.echo(f"Max iterations: {max_iterations}")
         
