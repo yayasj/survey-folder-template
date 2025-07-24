@@ -10,7 +10,7 @@ expectations:
     kwargs:
       column: "respondent_id"
     meta:
-      severity: "critical"
+      severity: "error"
 
   # GPS coordinate validation
   - expectation_type: "expect_column_values_to_be_between"
@@ -21,15 +21,6 @@ expectations:
     meta:
       severity: "error"
       description: "Age must be between 0 and 120"
-      
-  - expectation_type: "expect_column_values_to_be_between"
-    kwargs:
-      column: "gps_longitude"
-      min_value: -17.0  # Western boundary  
-      max_value: 5.0    # Eastern boundary
-    meta:
-      severity: "warning"
-      description: "Longitude should be within country bounds"
      
   - expectation_type: "expect_column_values_to_not_be_null"
     kwargs:
@@ -37,7 +28,7 @@ expectations:
       mostly: 1.0
     meta:
       severity: "warning"
-      description: "Most households should have GPS coordinates"
+      description: "Each respondent should have an industry specified"
       
   # Unique household locations
   - expectation_type: "expect_column_values_to_be_unique"
@@ -45,7 +36,7 @@ expectations:
       column: "respondent_id"
     meta:
       severity: "error"
-      description: "Each household should have one GPS record"
+      description: "Each respondent should have a unique ID"
 
   - expectation_type: "expect_column_values_to_be_in_set"
     kwargs:
@@ -54,3 +45,11 @@ expectations:
     meta:
       severity: "warning"
       description: "Gender should be from predefined list"
+
+  - expectation_type: "expect_column_values_to_not_be_null"
+    kwargs:
+      column: "respondent_id"
+      mostly: 1.0
+    meta:
+      severity: "warning"
+      description: "Each respondent should have an ID"

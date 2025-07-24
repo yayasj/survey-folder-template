@@ -182,14 +182,25 @@ def validate(ctx, dataset, suite):
     try:
         from survey_pipeline.validation import ValidationEngine
         from survey_pipeline.utils import create_run_timestamp
+        from datetime import datetime
         
         run_timestamp = create_run_timestamp()
+        
+        # Set up validation-specific logging
+        log_files = config.get('log_files', {})
+        validation_log = log_files.get('validation', 'logs/validate_{date}.log')
+        validation_log_path = validation_log.format(date=datetime.now().strftime('%Y-%m-%d'))
+        
+        # Reconfigure logging to include validation log file
+        log_level = "DEBUG" if ctx.parent.params.get('verbose') else "INFO"
+        setup_logging(level=log_level, log_file=validation_log_path)
         
         # Initialize validation engine
         project_root = Path.cwd()
         validation_engine = ValidationEngine(config, project_root)
         
         click.echo("🔍 Starting data validation...")
+        click.echo(f"📝 Logging to: {validation_log_path}")
         
         if dataset:
             # Validate specific dataset

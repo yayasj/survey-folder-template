@@ -2,23 +2,31 @@
 ODK Central Integration Module
 Handles authentication, form discovery, and data download from ODK Central
 
-This module includes enhanced data processing to handle common ODK export issues:
-- Group headers that create unnamed columns
-- Missing column headers from complex form structures  
-- Empty columns resulting from group organization
-- Data formatting inconsistencies
+This module addresses common ODK export issues using the proper ODK Central CSV API:
+- Group headers that create column name prefixes (meta/, __system/, etc.)
+- Data misalignment caused by nested group structures
+- Unnamed columns resulting from group organization
+- Column header formatting inconsistencies
 
-Key features:
-- Automatic column header cleaning and naming
-- Empty column removal
-- Fallback export methods for problematic forms
+Key Solution:
+- Uses ODK Central's CSV export API with groupPaths=false parameter
+- This flattens group headers at the source (ODK server-side)
+- Eliminates the need for complex client-side column processing
+- Provides proper fallback methods for compatibility
+
+Features:
+- Primary: ODK Central CSV API with group flattening
+- Fallback: OData method with manual processing  
+- Final fallback: List submissions conversion
 - Configurable data processing options
+- Comprehensive error handling and logging
 """
 
 import logging
 import json
 import tempfile
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
@@ -48,6 +56,7 @@ class ODKCentralClient:
         self.clean_column_headers = self.odk_config.get('clean_column_headers', True)
         self.remove_empty_columns = self.odk_config.get('remove_empty_columns', True)
         self.use_fallback_export = self.odk_config.get('use_fallback_export', True)
+        self.flatten_group_headers = self.odk_config.get('flatten_group_headers', True)  # Use CSV API with groupPaths=false
         
         # Validate required configuration
         required_fields = ['base_url', 'username', 'password', 'project_id']
@@ -239,23 +248,72 @@ default_project_id = {self.odk_config['project_id']}
             # Check for unnamed columns and generate names
             new_columns = []
             unnamed_count = 0
+            columns_to_drop = []
             
             for i, col in enumerate(df.columns):
-                if pd.isna(col) or str(col).strip() == '' or str(col).startswith('Unnamed'):
-                    # Generate a meaningful name for unnamed columns
-                    unnamed_count += 1
-                    new_name = f"field_{i+1}_unnamed_{unnamed_count}"
-                    new_columns.append(new_name)
-                    logger.warning(f"Fixed unnamed column at position {i+1} → '{new_name}' in {form_id}")
+                col_str = str(col).strip()
+                
+                # More comprehensive detection of problematic columns
+                is_unnamed = (
+                    pd.isna(col) or 
+                    col_str == '' or 
+                    col_str == 'nan' or
+                    col_str.startswith('Unnamed') or
+                    col_str.startswith('Column') or
+                    # Check for numeric-only column names (often auto-generated)
+                    (col_str.isdigit() and len(col_str) <= 3) or
+                    # Check for generic patterns like 'field_1', 'var_1', etc.
+                    bool(re.match(r'^(field|var|col)_?\d*$', col_str, re.IGNORECASE))
+                )
+                
+                if is_unnamed:
+                    # Check if this column has any meaningful data
+                    non_null_count = df[col].notna().sum()
+                    non_empty_count = 0
+                    
+                    if df[col].dtype == 'object':
+                        non_empty_count = df[col].fillna('').str.strip().ne('').sum()
+                    else:
+                        non_empty_count = non_null_count
+                    
+                    # If column has very little data (less than 5% of rows), mark for removal
+                    data_threshold = max(1, len(df) * 0.05)  # At least 5% of rows or 1 row
+                    
+                    if non_empty_count < data_threshold:
+                        columns_to_drop.append(col)
+                        logger.info(f"Marking sparse unnamed column at position {i+1} for removal: '{col_str}' "
+                                  f"({non_empty_count}/{len(df)} non-empty values)")
+                    else:
+                        # Generate a meaningful name for unnamed columns with data
+                        unnamed_count += 1
+                        new_name = f"field_{i+1}_unnamed_{unnamed_count}"
+                        new_columns.append(new_name)
+                        logger.warning(f"Fixed unnamed column at position {i+1} → '{new_name}' in {form_id} "
+                                     f"({non_empty_count} non-empty values)")
                 else:
                     # Clean existing column names
-                    clean_name = str(col).strip()
+                    clean_name = col_str
                     # Remove group prefixes that might cause issues
                     if '/' in clean_name:
                         clean_name = clean_name.split('/')[-1]  # Use last part after group separator
+                    
+                    # Clean up any remaining problematic characters
+                    clean_name = re.sub(r'[^\w\-_]', '_', clean_name)
+                    clean_name = clean_name.strip('_')
+                    
+                    if not clean_name:  # If cleaning resulted in empty string
+                        clean_name = f"field_{i+1}"
+                    
                     new_columns.append(clean_name)
             
+            # Apply new column names
             df.columns = new_columns
+            
+            # Drop columns that were marked for removal
+            if columns_to_drop:
+                df = df.drop(columns=columns_to_drop)
+                logger.info(f"Dropped {len(columns_to_drop)} sparse unnamed columns from {form_id}")
+            
             return df
             
         except Exception as e:
@@ -273,23 +331,46 @@ default_project_id = {self.odk_config['project_id']}
             DataFrame with empty columns removed
         """
         try:
-            # Identify completely empty columns
+            initial_cols = len(df.columns)
+            
+            # Identify completely empty columns (all NaN)
             empty_cols = df.columns[df.isnull().all()].tolist()
             
-            if empty_cols:
-                logger.info(f"Removing {len(empty_cols)} completely empty columns: {empty_cols}")
-                df = df.drop(columns=empty_cols)
-            
-            # Also remove columns that are all empty strings
+            # Identify columns that are all empty strings
             string_empty_cols = []
             for col in df.columns:
                 if df[col].dtype == 'object':
                     if df[col].fillna('').str.strip().eq('').all():
                         string_empty_cols.append(col)
             
-            if string_empty_cols:
-                logger.info(f"Removing {len(string_empty_cols)} columns with only empty strings: {string_empty_cols}")
-                df = df.drop(columns=string_empty_cols)
+            # Identify columns with very sparse data (less than 2% non-empty values)
+            sparse_threshold = max(1, len(df) * 0.02)  # At least 2% of rows or 1 row
+            sparse_cols = []
+            
+            for col in df.columns:
+                if col not in empty_cols and col not in string_empty_cols:
+                    if df[col].dtype == 'object':
+                        non_empty_count = df[col].fillna('').str.strip().ne('').sum()
+                    else:
+                        non_empty_count = df[col].notna().sum()
+                    
+                    if non_empty_count < sparse_threshold:
+                        sparse_cols.append(col)
+            
+            # Combine all columns to remove
+            all_cols_to_remove = list(set(empty_cols + string_empty_cols + sparse_cols))
+            
+            if all_cols_to_remove:
+                logger.info(f"Removing {len(all_cols_to_remove)} problematic columns:")
+                if empty_cols:
+                    logger.info(f"  - {len(empty_cols)} completely empty columns: {empty_cols}")
+                if string_empty_cols:
+                    logger.info(f"  - {len(string_empty_cols)} empty string columns: {string_empty_cols}")
+                if sparse_cols:
+                    logger.info(f"  - {len(sparse_cols)} sparse columns: {sparse_cols}")
+                
+                df = df.drop(columns=all_cols_to_remove)
+                logger.info(f"Column count reduced from {initial_cols} to {len(df.columns)}")
             
             return df
             
@@ -393,7 +474,7 @@ default_project_id = {self.odk_config['project_id']}
         format: str = "csv"
     ) -> Tuple[Path, Dict[str, Any]]:
         """
-        Download data for a specific form
+        Download data for a specific form using ODK Central's CSV export with group flattening
         
         Args:
             form_id: ODK form ID
@@ -413,66 +494,100 @@ default_project_id = {self.odk_config['project_id']}
             
             # Download submissions data
             if format.lower() == "csv":
-                # Try primary method first (get_table)
+                # Use ODK Central's CSV export API with group flattening
                 try:
-                    data = self.client.submissions.get_table(
-                        project_id=project_id,
-                        form_id=form_id
+                    # Build the CSV export URL
+                    csv_export_url = f"projects/{project_id}/forms/{form_id}/submissions.csv"
+                    
+                    logger.info(f"Using ODK Central CSV export API for {form_id} with group flattening enabled")
+                    
+                    # Make direct API call to get CSV with flattened group headers
+                    response = self.client.session.response_or_error(
+                        method="GET",
+                        url=self.client.session.urlformat(csv_export_url),
+                        params={
+                            'groupPaths': 'false',  # This removes group prefixes (meta/ becomes instanceID)
+                            'deletedFields': 'false',  # Don't include deleted fields
+                            'splitSelectMultiples': 'false'  # Keep select multiples as single columns
+                        },
+                        logger=logger
                     )
                     
-                    # Convert to DataFrame and save as CSV
-                    if 'value' in data and data['value']:
-                        # Process ODK table data to handle group headers and column formatting
-                        processed_data = self._process_odk_table_data(data, form_id)
-                        
-                        if processed_data is not None and not processed_data.empty:
-                            # Save to CSV file
-                            filename = f"{form_id}.csv"
-                            file_path = output_path / filename
-                            
-                            processed_data.to_csv(file_path, index=False, encoding='utf-8')
-                        else:
-                            logger.warning(f"No valid data found after processing for form: {form_id}")
-                            return None, None
-                    else:
-                        # No data available
-                        logger.warning(f"No submissions found for form: {form_id}")
-                        return None, None
-                        
-                except Exception as table_error:
-                    logger.warning(f"get_table() failed for {form_id}: {str(table_error)}")
+                    # Save CSV data directly to file
+                    filename = f"{form_id}.csv"
+                    file_path = output_path / filename
+                    
+                    # Write the CSV content to file
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        f.write(response.text)
+                    
+                    logger.info(f"✅ Successfully downloaded flattened CSV for {form_id}")
+                    
+                except Exception as csv_api_error:
+                    logger.warning(f"ODK Central CSV API failed for {form_id}: {str(csv_api_error)}")
                     
                     if self.use_fallback_export:
-                        logger.info(f"Attempting alternative CSV export method for {form_id}")
+                        logger.info(f"Falling back to OData method with manual processing for {form_id}")
                         
-                        # Fallback to list submissions and convert
+                        # Fallback to get_table method with manual processing
                         try:
-                            submissions = self.client.submissions.list(
+                            data = self.client.submissions.get_table(
                                 project_id=project_id,
                                 form_id=form_id
                             )
                             
-                            if submissions:
-                                # Convert submissions to DataFrame
-                                processed_data = self._process_submissions_to_dataframe(submissions, form_id)
+                            # Convert to DataFrame and save as CSV
+                            if 'value' in data and data['value']:
+                                # Process ODK table data to handle group headers and column formatting
+                                processed_data = self._process_odk_table_data(data, form_id)
                                 
                                 if processed_data is not None and not processed_data.empty:
+                                    # Save to CSV file
                                     filename = f"{form_id}.csv"
                                     file_path = output_path / filename
+                                    
                                     processed_data.to_csv(file_path, index=False, encoding='utf-8')
+                                    logger.info(f"✅ Fallback OData method successful for {form_id}")
                                 else:
-                                    logger.warning(f"No valid data from fallback method for form: {form_id}")
+                                    logger.warning(f"No valid data found after processing for form: {form_id}")
                                     return None, None
                             else:
+                                # No data available
                                 logger.warning(f"No submissions found for form: {form_id}")
                                 return None, None
                                 
-                        except Exception as fallback_error:
-                            logger.error(f"Both CSV export methods failed for {form_id}: {str(fallback_error)}")
-                            raise
+                        except Exception as odata_error:
+                            logger.error(f"OData fallback also failed for {form_id}: {str(odata_error)}")
+                            
+                            # Final fallback: list submissions
+                            try:
+                                submissions = self.client.submissions.list(
+                                    project_id=project_id,
+                                    form_id=form_id
+                                )
+                                
+                                if submissions:
+                                    # Convert submissions to DataFrame
+                                    processed_data = self._process_submissions_to_dataframe(submissions, form_id)
+                                    
+                                    if processed_data is not None and not processed_data.empty:
+                                        filename = f"{form_id}.csv"
+                                        file_path = output_path / filename
+                                        processed_data.to_csv(file_path, index=False, encoding='utf-8')
+                                        logger.info(f"✅ Final fallback method successful for {form_id}")
+                                    else:
+                                        logger.warning(f"No valid data from final fallback for form: {form_id}")
+                                        return None, None
+                                else:
+                                    logger.warning(f"No submissions found for form: {form_id}")
+                                    return None, None
+                                    
+                            except Exception as final_error:
+                                logger.error(f"All export methods failed for {form_id}: {str(final_error)}")
+                                raise
                     else:
                         logger.error(f"CSV export failed for {form_id} and fallback is disabled")
-                        raise table_error
+                        raise csv_api_error
                 
             elif format.lower() == "json":
                 data = self.client.submissions.list(
@@ -501,11 +616,12 @@ default_project_id = {self.odk_config['project_id']}
                 "file_path": str(file_path),
                 "submission_count": submission_count,
                 "download_timestamp": datetime.now().isoformat(),
-                "file_size_bytes": file_path.stat().st_size if file_path.exists() else 0
+                "file_size_bytes": file_path.stat().st_size if file_path.exists() else 0,
+                "method_used": "csv_api_with_group_flattening" if format.lower() == "csv" else "standard"
             }
             
             logger.info(f"✅ Downloaded {submission_count} submissions for {form_id} "
-                       f"({metadata['file_size_bytes']} bytes)")
+                       f"({metadata['file_size_bytes']} bytes) using {metadata['method_used']}")
             
             return file_path, metadata
             

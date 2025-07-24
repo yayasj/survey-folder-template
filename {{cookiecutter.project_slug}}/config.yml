@@ -40,6 +40,7 @@ odk:
   clean_column_headers: true      # Fix unnamed columns and group header issues
   remove_empty_columns: true      # Remove completely empty columns from exports
   use_fallback_export: true       # Use alternative export method if primary fails
+  flatten_group_headers: true     # Use ODK Central CSV API with flattened group headers (removes meta/ prefixes)
 
 # Pipeline configuration
 staging:
@@ -84,15 +85,8 @@ datasets:
 
 # Administrative columns to include in failed row extracts
 admin_columns:
-  - "district"
-  - "community"
-  - "enumerator_id"
-  - "supervisor_id"
-  - "form_version"
-  - "submission_uuid"
-  - "submission_date"
-  - "gps_latitude"
-  - "gps_longitude"
+  - "instanceID"
+  - "SubmitterName"
 
 # Publishing settings
 publish:

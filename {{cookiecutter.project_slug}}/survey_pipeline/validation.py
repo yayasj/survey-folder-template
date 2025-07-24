@@ -322,6 +322,31 @@ class ValidationEngine:
                 }
             }
         
+        elif expectation_type == "expect_column_values_to_be_unique":
+            column = kwargs.get('column')
+            mostly = kwargs.get('mostly', 1.0)
+            
+            if column not in df.columns:
+                return {'success': False, 'result': {'error': f'Column {column} not found'}}
+            
+            # Check for duplicates in the specified column
+            total_count = len(df)
+            unique_count = df[column].nunique()
+            duplicate_count = total_count - unique_count
+            unique_rate = unique_count / total_count if total_count > 0 else 1.0
+            success = unique_rate >= mostly
+            
+            return {
+                'success': success,
+                'result': {
+                    'observed_value': unique_rate,
+                    'expected_value': mostly,
+                    'unique_count': int(unique_count),
+                    'total_count': int(total_count),
+                    'duplicate_count': int(duplicate_count)
+                }
+            }
+        
         elif expectation_type == "expect_compound_columns_to_be_unique":
             column_list = kwargs.get('column_list', [])
             
@@ -353,23 +378,78 @@ class ValidationEngine:
         df: pd.DataFrame, 
         validation_results: Dict[str, Any]
     ) -> Optional[pd.DataFrame]:
-        """Extract rows that failed validation"""
+        """Extract rows that failed validation with detailed failure messages"""
         
         failed_row_mask = pd.Series([False] * len(df))
+        row_failure_messages = []  # Track failure messages for each row
+        
+        # Initialize failure tracking for each row
+        for i in range(len(df)):
+            row_failure_messages.append([])
         
         # Process each failed expectation
         for expectation_result in validation_results['expectation_results']:
             if not expectation_result['success']:
                 expectation_type = expectation_result['expectation_type']
                 kwargs = expectation_result['kwargs']
+                meta = expectation_result.get('meta', {})
                 
                 # Create mask for this expectation's failures
                 mask = self._create_failure_mask(df, expectation_type, kwargs)
                 if mask is not None:
                     failed_row_mask |= mask
+                    
+                    # Generate descriptive failure message
+                    failure_message = self._generate_failure_message(
+                        expectation_type, kwargs, meta
+                    )
+                    
+                    # Add failure message to affected rows
+                    for i, failed in enumerate(mask):
+                        if failed:
+                            row_failure_messages[i].append(failure_message)
         
         if failed_row_mask.any():
             failed_rows = df[failed_row_mask].copy()
+            
+            # Add validation failure information
+            validation_messages = []
+            validation_severity = []
+            failure_count = []
+            
+            for i, row_idx in enumerate(failed_rows.index):
+                original_idx = df.index.get_loc(row_idx)
+                messages = row_failure_messages[original_idx]
+                
+                validation_messages.append(" | ".join(messages))
+                
+                # Determine overall severity for this row
+                severity_levels = []
+                for expectation_result in validation_results['expectation_results']:
+                    if not expectation_result['success']:
+                        expectation_type = expectation_result['expectation_type']
+                        kwargs = expectation_result['kwargs']
+                        meta = expectation_result.get('meta', {})
+                        
+                        mask = self._create_failure_mask(df, expectation_type, kwargs)
+                        if mask is not None and mask.iloc[original_idx]:
+                            severity_levels.append(meta.get('severity', 'warning'))
+                
+                # Determine highest severity level
+                if 'critical' in severity_levels:
+                    validation_severity.append('critical')
+                elif 'error' in severity_levels:
+                    validation_severity.append('error')
+                else:
+                    validation_severity.append('warning')
+                
+                failure_count.append(len(messages))
+            
+            # Add validation columns to the failed rows dataframe
+            failed_rows['validation_failures'] = validation_messages
+            failed_rows['validation_severity'] = validation_severity
+            failed_rows['failure_count'] = failure_count
+            
             logger.info(f"Extracted {len(failed_rows)} failed rows")
             return failed_rows
         
@@ -403,6 +483,13 @@ class ValidationEngine:
             if column in df.columns:
                 return ~df[column].isin(value_set)
         
+        elif expectation_type == "expect_column_values_to_be_unique":
+            column = kwargs.get('column')
+            
+            if column in df.columns:
+                # Mark duplicated values (keep=False marks ALL duplicates)
+                return df.duplicated(subset=[column], keep=False)
+        
         elif expectation_type == "expect_compound_columns_to_be_unique":
             column_list = kwargs.get('column_list', [])
             missing_columns = [col for col in column_list if col not in df.columns]
@@ -411,6 +498,53 @@ class ValidationEngine:
                 return df.duplicated(subset=column_list, keep=False)
         
         return None
+    
+    def _generate_failure_message(
+        self, 
+        expectation_type: str, 
+        kwargs: Dict[str, Any], 
+        meta: Dict[str, Any]
+    ) -> str:
+        """Generate human-readable failure message for an expectation"""
+        
+        # Check if custom description is provided in meta
+        if meta.get('description'):
+            return meta['description']
+        
+        # Generate default messages based on expectation type
+        if expectation_type == "expect_column_values_to_not_be_null":
+            column = kwargs.get('column', 'unknown')
+            return f"Missing required value in '{column}'"
+        
+        elif expectation_type == "expect_column_values_to_be_between":
+            column = kwargs.get('column', 'unknown')
+            min_val = kwargs.get('min_value', 'unknown')
+            max_val = kwargs.get('max_value', 'unknown')
+            return f"Value in '{column}' must be between {min_val} and {max_val}"
+        
+        elif expectation_type == "expect_column_values_to_be_in_set":
+            column = kwargs.get('column', 'unknown')
+            value_set = kwargs.get('value_set', [])
+            if len(value_set) <= 5:
+                values_str = ", ".join(map(str, value_set))
+                return f"Value in '{column}' must be one of: {values_str}"
+            else:
+                return f"Value in '{column}' is not from allowed list ({len(value_set)} options)"
+        
+        elif expectation_type == "expect_column_values_to_be_unique":
+            column = kwargs.get('column', 'unknown')
+            return f"Duplicate value found in '{column}' (must be unique)"
+        
+        elif expectation_type == "expect_compound_columns_to_be_unique":
+            column_list = kwargs.get('column_list', [])
+            columns_str = ", ".join(column_list)
+            return f"Duplicate combination found in columns: {columns_str}"
+        
+        elif expectation_type == "expect_table_columns_to_match_ordered_list":
+            return "Column structure does not match expected format"
+        
+        else:
+            return f"Failed validation rule: {expectation_type}"
     
     def _add_admin_columns(self, failed_rows_df: pd.DataFrame) -> pd.DataFrame:
         """Add administrative columns to failed rows extract"""
@@ -425,12 +559,22 @@ class ValidationEngine:
             if col not in failed_rows_df.columns:
                 failed_rows_df[col] = 'NOT_AVAILABLE'
         
-        # Reorder columns to put admin columns first
+        # Define validation-specific columns that should come first
+        validation_cols = ['validation_failures', 'validation_severity', 'failure_count']
+        existing_validation_cols = [col for col in validation_cols if col in failed_rows_df.columns]
+        
+        # Reorder columns: validation columns first, then admin columns, then data columns
         all_admin_cols = ['validation_timestamp'] + admin_columns
         existing_admin_cols = [col for col in all_admin_cols if col in failed_rows_df.columns]
-        other_cols = [col for col in failed_rows_df.columns if col not in existing_admin_cols]
         
-        return failed_rows_df[existing_admin_cols + other_cols]
+        # Get remaining data columns (excluding validation and admin columns)
+        excluded_cols = existing_validation_cols + existing_admin_cols
+        other_cols = [col for col in failed_rows_df.columns if col not in excluded_cols]
+        
+        # Final column order: validation info, admin info, then original data
+        final_column_order = existing_validation_cols + existing_admin_cols + other_cols
+        
+        return failed_rows_df[final_column_order]
     
     def _save_failed_rows(
         self, 
