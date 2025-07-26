@@ -445,22 +445,132 @@ def publish(ctx, force, dry_run):
             
     except Exception as e:
         click.echo(f"❌ Publication error: {str(e)}")
-        sys.exit(1)
+
+def _run_pipeline_sequential(ctx, steps, force):
+    """Run pipeline using sequential CLI command execution"""
+    from datetime import datetime
+    
+    pipeline_start = datetime.now()
+    results = {'steps': {}, 'overall_success': True, 'start_time': pipeline_start.isoformat()}
+    
+    click.echo(f"\n📋 Executing {len(steps)} pipeline steps sequentially...")
+    
+    try:
+        # Step 1: Ingest
+        if "ingest" in steps:
+            click.echo("\n" + "="*50)
+            click.echo("📥 Step 1/4: Data Ingestion")
+            click.echo("="*50)
+            
+            try:
+                ctx.invoke(ingest, dry_run=False, format='csv', forms=None)
+                results['steps']['ingest'] = {'status': 'success', 'timestamp': datetime.now().isoformat()}
+                click.echo("✅ Ingestion completed successfully")
+            except Exception as e:
+                click.echo(f"❌ Ingestion failed: {str(e)}")
+                results['steps']['ingest'] = {'status': 'failed', 'error': str(e), 'timestamp': datetime.now().isoformat()}
+                results['overall_success'] = False
+                if not force:
+                    raise click.ClickException(f"Pipeline stopped due to ingestion failure: {str(e)}")
+        
+        # Step 2: Validate
+        if "validate" in steps and results['overall_success']:
+            click.echo("\n" + "="*50)
+            click.echo("🔍 Step 2/4: Data Validation")
+            click.echo("="*50)
+            
+            try:
+                ctx.invoke(validate, dataset=None, suite=None)
+                results['steps']['validate'] = {'status': 'success', 'timestamp': datetime.now().isoformat()}
+                click.echo("✅ Validation completed successfully")
+            except Exception as e:
+                click.echo(f"❌ Validation failed: {str(e)}")
+                results['steps']['validate'] = {'status': 'failed', 'error': str(e), 'timestamp': datetime.now().isoformat()}
+                results['overall_success'] = False
+                if not force:
+                    raise click.ClickException(f"Pipeline stopped due to validation failure: {str(e)}")
+        
+        # Step 3: Clean
+        if "clean" in steps and (results['overall_success'] or force):
+            click.echo("\n" + "="*50)
+            click.echo("🧹 Step 3/4: Data Cleaning")
+            click.echo("="*50)
+            
+            try:
+                ctx.invoke(clean, rules_file=None, max_iterations=5, dry_run=False)
+                results['steps']['clean'] = {'status': 'success', 'timestamp': datetime.now().isoformat()}
+                click.echo("✅ Cleaning completed successfully")
+            except Exception as e:
+                click.echo(f"❌ Cleaning failed: {str(e)}")
+                results['steps']['clean'] = {'status': 'failed', 'error': str(e), 'timestamp': datetime.now().isoformat()}
+                results['overall_success'] = False
+                if not force:
+                    raise click.ClickException(f"Pipeline stopped due to cleaning failure: {str(e)}")
+        
+        # Step 4: Publish
+        if "publish" in steps and (results['overall_success'] or force):
+            click.echo("\n" + "="*50)
+            click.echo("📤 Step 4/4: Data Publishing")
+            click.echo("="*50)
+            
+            try:
+                ctx.invoke(publish, force=force, dry_run=False)
+                results['steps']['publish'] = {'status': 'success', 'timestamp': datetime.now().isoformat()}
+                click.echo("✅ Publishing completed successfully")
+            except Exception as e:
+                click.echo(f"❌ Publishing failed: {str(e)}")
+                results['steps']['publish'] = {'status': 'failed', 'error': str(e), 'timestamp': datetime.now().isoformat()}
+                results['overall_success'] = False
+        
+        # Pipeline Summary
+        pipeline_end = datetime.now()
+        duration = pipeline_end - pipeline_start
+        results['end_time'] = pipeline_end.isoformat()
+        results['duration_seconds'] = duration.total_seconds()
+        
+        click.echo("\n" + "="*60)
+        click.echo("📊 PIPELINE SUMMARY")
+        click.echo("="*60)
+        click.echo(f"⏱️  Duration: {duration}")
+        click.echo(f"📈 Steps completed: {len([s for s in results['steps'].values() if s['status'] == 'success'])}/{len(steps)}")
+        
+        for step_name, step_result in results['steps'].items():
+            status_icon = "✅" if step_result['status'] == 'success' else "❌"
+            click.echo(f"  {status_icon} {step_name.title()}: {step_result['status']}")
+            if step_result['status'] == 'failed':
+                click.echo(f"    Error: {step_result.get('error', 'Unknown error')}")
+        
+        if results['overall_success']:
+            click.echo(f"\n🎉 Pipeline completed successfully in {duration}!")
+            click.echo("📁 Data is now available in cleaned_stable/ directory")
+        else:
+            failed_steps = [name for name, result in results['steps'].items() if result['status'] == 'failed']
+            click.echo(f"\n⚠️  Pipeline completed with errors in: {', '.join(failed_steps)}")
+            if force:
+                click.echo("📁 Some data may still be available despite errors (force mode)")
+        
+        return results
+        
+    except click.ClickException:
+        raise
+    except Exception as e:
+        results['overall_success'] = False
+        results['unexpected_error'] = str(e)
+        click.echo(f"\n💥 Unexpected pipeline error: {str(e)}")
+        raise click.ClickException(f"Pipeline failed with unexpected error: {str(e)}")
 
 @cli.command()
 @click.option('--skip-validation', is_flag=True, help='Skip validation step')
 @click.option('--skip-cleaning', is_flag=True, help='Skip cleaning step')
+@click.option('--force', is_flag=True, help='Force publish even if validation fails')
 @click.pass_context
-def run_pipeline(ctx, skip_validation, skip_cleaning):
+def run_pipeline(ctx, skip_validation, skip_cleaning, force):
     """Run the complete pipeline (ingest -> validate -> clean -> publish)"""
     config = ctx.obj['config']
     
     click.echo("🚀 Starting complete pipeline...")
     
-    # This will be implemented in the next iteration using Prefect
-    click.echo("⚠️  Full pipeline not yet implemented")
-    click.echo("Will implement Prefect orchestration in next iteration")
-    
+    # Determine pipeline steps
     steps = ["ingest"]
     if not skip_validation:
         steps.append("validate")
@@ -469,6 +579,9 @@ def run_pipeline(ctx, skip_validation, skip_cleaning):
     steps.append("publish")
     
     click.echo(f"Pipeline steps: {' -> '.join(steps)}")
+    
+    # Use direct CLI command execution
+    return _run_pipeline_sequential(ctx, steps, force)
 
 @cli.command()
 @click.option('--to', help='Rollback to specific timestamp (YYYY-MM-DD_HH-MM-SS)')
@@ -592,10 +705,10 @@ def status(ctx, output_format):
                 click.echo(f"  ❌ {name}: Directory not found")
         
         # Publication status
-        click.echo(f"\n� Publication Status:")
+        click.echo(f"\n🚀 Publication Status:")
         click.echo(f"  📁 Stable directory: {'✅' if pub_status['stable_directory_exists'] else '❌'}")
         click.echo(f"  🚀 Staging ready: {'✅' if pub_status['staging_ready'] else '❌'}")
-        click.echo(f"  �📈 Current records: {pub_status['total_records']}")
+        click.echo(f"  📈 Current records: {pub_status['total_records']}")
         
         # Last publication
         if pub_status['last_publication']:
